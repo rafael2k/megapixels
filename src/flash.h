@@ -1,5 +1,8 @@
 #include "gio/gio.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 typedef struct _MPFlash MPFlash;
 
 void mp_flash_gtk_init(GDBusConnection *conn);
@@ -11,3 +14,7 @@ void mp_flash_free(MPFlash *flash);
 
 void mp_flash_enable(MPFlash *flash);
 void mp_flash_disable(MPFlash *flash);
+
+#ifdef __cplusplus
+}
+#endif

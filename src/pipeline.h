@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "camera.h"
 #include "device.h"
 #include <glib.h>
@@ -21,3 +25,7 @@ GSource *mp_pipeline_add_capture_source(MPPipeline *pipeline,
                                         MPCamera *camera,
                                         void (*callback)(MPBuffer, void *),
                                         void *user_data);
+
+#ifdef __cplusplus
+}
+#endif

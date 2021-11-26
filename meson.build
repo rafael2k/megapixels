@@ -1,4 +1,5 @@
-project('megapixels', 'c', version: '1.4.2')
+project('megapixels', 'c', 'cpp', version: '1.4.2',
+  default_options: ['cpp_std=c++17'])
 
 gnome = import('gnome')
 gtkdep = dependency('gtk4')
@@ -7,6 +8,7 @@ zbar = dependency('zbar')
 threads = dependency('threads')
 # gl = dependency('gl')
 epoxy      = dependency('epoxy')
+libcamera      = dependency('libcamera')
 
 cc = meson.get_compiler('c')
 libm = cc.find_library('m', required: false)
@@ -41,7 +43,7 @@ executable('megapixels',
   'src/gl_util.c',
   'src/gles2_debayer.c',
   'src/ini.c',
-  'src/io_pipeline.c',
+  'src/io_pipeline.cc',
   'src/main.c',
   'src/matrix.c',
   'src/pipeline.c',
@@ -49,7 +51,7 @@ executable('megapixels',
   'src/zbar_pipeline.c',
   resources,
   include_directories: 'src/',
-  dependencies: [gtkdep, libm, tiff, zbar, threads, epoxy],
+  dependencies: [gtkdep, libm, tiff, zbar, threads, epoxy, libcamera],
   install: true,
   link_args: '-Wl,-ldl')
 
@@ -61,22 +63,6 @@ install_data(
     'config/pine64,pinetab.ini',
   ],
   install_dir: get_option('datadir') / 'megapixels/config/')
-
-# Tools
-executable('megapixels-list-devices',
-  'tools/list_devices.c',
-  'src/device.c',
-  include_directories: 'src/',
-  dependencies: [gtkdep],
-  install: true)
-
-executable('megapixels-camera-test',
-  'tools/camera_test.c',
-  'src/camera.c',
-  'src/device.c',
-  include_directories: 'src/',
-  dependencies: [gtkdep],
-  install: true)
 
 # Formatting
 clang_format = find_program('clang-format-12', required: false)
@@ -90,7 +76,7 @@ if clang_format.found()
     'data/solid.vert',
     'src/camera.c',
     'src/camera.h',
-    'src/camera_config.c',
+    'src/camera_config.cc',
     'src/camera_config.h',
     'src/device.c',
     'src/device.h',
@@ -100,7 +86,7 @@ if clang_format.found()
     'src/gl_util.h',
     'src/gles2_debayer.c',
     'src/gles2_debayer.h',
-    'src/io_pipeline.c',
+    'src/io_pipeline.cc',
     'src/io_pipeline.h',
     'src/main.c',
     'src/main.h',

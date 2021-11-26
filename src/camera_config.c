@@ -158,10 +158,8 @@ config_ini_handler(void *user,
                         cc->rotate = strtoint(value, NULL, 10);
                 } else if (strcmp(name, "mirrored") == 0) {
                         cc->mirrored = strcmp(value, "true") == 0;
-                } else if (strcmp(name, "driver") == 0) {
-                        strcpy(cc->dev_name, value);
-                } else if (strcmp(name, "media-driver") == 0) {
-                        strcpy(cc->media_dev_name, value);
+                } else if (strcmp(name, "id") == 0) {
+                        strcpy(cc->id, value);
                 } else if (strcmp(name, "media-links") == 0) {
                         char **linkdefs = g_strsplit(value, ",", 0);
 
