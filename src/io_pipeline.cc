@@ -91,9 +91,6 @@ static bool flash_enabled = false;
 static bool want_focus = false;
 
 static MPPipeline *pipeline;
-// static GSource *capture_source;
-
-static GMutex buffer_mutex;
 
 static void
 on_frame(libcamera::Request *request);
@@ -215,8 +212,6 @@ setup_camera(const struct mp_camera_config *config)
 static void
 setup(MPPipeline *pipeline, const void *data)
 {
-        g_mutex_init(&buffer_mutex);
-
         int ret = camera_manager.start();
         if (ret) {
                 printf("Failed to start camera manager: %s\n", strerror(-ret));
@@ -320,6 +315,8 @@ mp_io_pipeline_focus()
 
 static std::unique_ptr<libcamera::FrameBufferAllocator> frame_buffer_allocator;
 
+static libcamera::Stream *active_stream;
+
 struct BufferMap {
         libcamera::FrameBuffer *buffer;
         std::unique_ptr<libcamera::Request> request;
@@ -333,9 +330,9 @@ static void camera_stop(const camera_info *info)
 {
         mp_process_pipeline_sync();
 
-        g_mutex_lock(&buffer_mutex);
-
         const struct mp_camera_config *config = mp_get_camera_config(info->index);
+
+        active_stream = NULL;
 
         int ret = info->camera->stop();
         if (ret) {
@@ -351,16 +348,10 @@ static void camera_stop(const camera_info *info)
                 }
         }
         buffer_maps.clear();
-
-        g_mutex_unlock(&buffer_mutex);
 }
-
-static uint32_t request_id = 0;
 
 static void camera_start(const camera_info *info, libcamera::CameraConfiguration * cfg)
 {
-        g_mutex_lock(&buffer_mutex);
-
         const struct mp_camera_config *config = mp_get_camera_config(info->index);
 
         acquire_camera(info->camera.get());
@@ -380,7 +371,7 @@ static void camera_start(const camera_info *info, libcamera::CameraConfiguration
 
         assert(buffer_maps.empty());
         for (const auto & buffer : frame_buffer_allocator->buffers(stream)) {
-                std::unique_ptr<libcamera::Request> request = info->camera->createRequest(++request_id);
+                std::unique_ptr<libcamera::Request> request = info->camera->createRequest(buffer_maps.size());
                 if (!request) {
                         printf("Failed to create request camera %s\n", config->id);
                 }
@@ -417,14 +408,14 @@ static void camera_start(const camera_info *info, libcamera::CameraConfiguration
                 printf("Failed to stop camera %s: %s\n", config->id, strerror(-ret));
         }
 
+        active_stream = stream;
+
         for (const auto & buffer_map : buffer_maps) {
                 ret = info->camera->queueRequest(buffer_map.request.get());
                 if (ret) {
                         printf("Failed to queue request for camera %s: %s\n", config->id, strerror(-ret));
                 }
         }
-
-        g_mutex_unlock(&buffer_mutex);
 }
 
 static void
@@ -462,15 +453,11 @@ mp_io_pipeline_capture()
         mp_pipeline_invoke(pipeline, capture, NULL, 0);
 }
 
-void
-mp_io_pipeline_release_buffer(const MPBuffer *buffer)
+static void
+release_buffer(MPPipeline *pipeline, const MPBuffer *buffer)
 {
-        g_mutex_lock(&buffer_mutex);
-
         if (buffer->index >= buffer_maps.size()
                 || buffer_maps[buffer->index].data != buffer->data) {
-
-                g_mutex_unlock(&buffer_mutex);
                 return;
         }
 
@@ -478,8 +465,16 @@ mp_io_pipeline_release_buffer(const MPBuffer *buffer)
 
         buffer_maps[buffer->index].request->reuse(libcamera::Request::ReuseBuffers);
         info->camera->queueRequest(buffer_maps[buffer->index].request.get());
+}
 
-        g_mutex_unlock(&buffer_mutex);
+void
+mp_io_pipeline_release_buffer(const MPBuffer *buffer)
+{
+        mp_pipeline_invoke(
+                pipeline,
+                (MPPipelineCallback)release_buffer,
+                buffer,
+                sizeof(MPBuffer));
 }
 
 // static pid_t focus_continuous_task = 0;
@@ -546,30 +541,24 @@ update_controls()
         current_controls = desired_controls;
 }
 
+struct FrameData {
+        uint32_t buffer_index;
+        libcamera::Stream *stream;
+};
+
 static void
-on_frame(libcamera::Request *request)
+on_frame_impl(MPPipeline *pipeline, FrameData *frame_data)
 {
-        if (request->status() == libcamera::Request::RequestCancelled) {
+        if (frame_data->stream != active_stream || !active_stream) {
                 return;
         }
-
-        g_mutex_lock(&buffer_mutex);
 
         // Find buffer
-        MPBuffer buffer = { .fd = -1 };
-        for (size_t i = 0; i < buffer_maps.size(); ++i) {
-                if (buffer_maps[i].request.get() == request) {
-                        buffer.index = i;
-                        buffer.data = buffer_maps[i].data;
-                        buffer.fd = 0;
-                        break;
-                }
-        }
-
-        if (buffer.fd != 0) {
-                g_mutex_unlock(&buffer_mutex);
-                return;
-        }
+        MPBuffer buffer = {
+                .index = frame_data->buffer_index,
+                .data = buffer_maps[frame_data->buffer_index].data,
+                .fd = 0,
+        };
 
         // Only update controls right after a frame was captured
         update_controls();
@@ -592,7 +581,7 @@ on_frame(libcamera::Request *request)
                         if (image_is_blank) {
                                 ++blank_frame_count;
 
-                                g_mutex_unlock(&buffer_mutex);
+                                mp_io_pipeline_release_buffer(&buffer);
                                 return;
                         }
                 } else {
@@ -604,11 +593,7 @@ on_frame(libcamera::Request *request)
         }
 
         // Send the image off for processing
-        if (!mp_process_pipeline_process_image(buffer)) {
-                g_mutex_unlock(&buffer_mutex);
-                mp_io_pipeline_release_buffer(&buffer);
-                return;
-        }
+        mp_process_pipeline_process_image(buffer);
 
         if (captures_remaining > 0) {
                 --captures_remaining;
@@ -644,8 +629,26 @@ on_frame(libcamera::Request *request)
                         update_process_pipeline();
                 }
         }
+}
 
-        g_mutex_unlock(&buffer_mutex);
+static void
+on_frame(libcamera::Request *request)
+{
+        if (request->status() == libcamera::Request::RequestCancelled
+                || !active_stream) {
+                return;
+        }
+
+        FrameData data = {
+                .buffer_index = (uint32_t) request->cookie(),
+                .stream = active_stream,
+        };
+
+        mp_pipeline_invoke(
+                pipeline,
+                (MPPipelineCallback)on_frame_impl,
+                &data,
+                sizeof(FrameData));
 }
 
 static void

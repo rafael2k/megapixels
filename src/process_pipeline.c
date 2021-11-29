@@ -676,12 +676,13 @@ process_image(MPPipeline *pipeline, const MPBuffer *buffer)
 #endif
 }
 
-bool
+void
 mp_process_pipeline_process_image(MPBuffer buffer)
 {
         // If we haven't processed the previous frame yet, drop this one
         if (frames_received != frames_processed && !is_capturing) {
-                return false;
+                mp_io_pipeline_release_buffer(&buffer);
+                return;
         }
 
         ++frames_received;
@@ -690,7 +691,6 @@ mp_process_pipeline_process_image(MPBuffer buffer)
                            (MPPipelineCallback)process_image,
                            &buffer,
                            sizeof(MPBuffer));
-        return true;
 }
 
 static void
