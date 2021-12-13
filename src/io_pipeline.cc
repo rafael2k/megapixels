@@ -13,6 +13,7 @@
 #include <sys/mman.h>
 #include <libcamera/camera_manager.h>
 #include <libcamera/camera.h>
+#include <libcamera/control_ids.h>
 #include <libcamera/framebuffer_allocator.h>
 
 struct media_link_info {
@@ -36,23 +37,14 @@ struct camera_info {
 
         MPFlash *flash;
 
-        int gain_ctrl;
+        int auto_focus_ctrl;
+
+        int auto_gain_ctrl;
+        int manual_gain_ctrl;
         int gain_max;
 
-        bool has_auto_focus_continuous;
-        bool has_auto_focus_start;
-
-        // unsigned int entity_id;
-        // enum v4l2_buf_type type;
-
-        // char media_dev_fname[260];
-        // char video_dev_fname[260];
-        // int media_fd;
-
-        // struct mp_media_link media_links[MP_MAX_LINKS];
-        // int num_media_links;
-
-        // int gain_ctrl;
+        int auto_exposure_ctrl;
+        int manual_exposure_ctrl;
 };
 
 static libcamera::CameraManager camera_manager = {};
@@ -83,7 +75,6 @@ struct control_state {
         int exposure;
 };
 
-static struct control_state desired_controls = {};
 static struct control_state current_controls = {};
 
 static bool flash_enabled = false;
@@ -176,37 +167,34 @@ setup_camera(const struct mp_camera_config *config)
 
         camera->requestCompleted.connect(on_frame);
 
+        const libcamera::ControlInfoMap & controls = camera->controls();
 
+        // Fetch control info
+        if (controls.find(libcamera::controls::AF_ENABLED) != controls.end()) {
+                info->auto_focus_ctrl = libcamera::controls::AF_ENABLED;
+        } else if (controls.find(libcamera::controls::AF_START) != controls.end()) {
+                info->auto_focus_ctrl = libcamera::controls::AF_START;
+        }
 
-        // info->camera = mp_camera_new(dev_info->video_fd, info->fd);
+        if (controls.find(libcamera::controls::AUTO_GAIN) != controls.end()) {
+                info->auto_gain_ctrl = libcamera::controls::AUTO_GAIN;
+        }
 
-        // // Start with the capture format, this works around a bug with
-        // // the ov5640 driver where it won't allow setting the preview
-        // // format initially.
-        // MPCameraMode mode = config->capture_mode;
-        // mp_camera_set_mode(info->camera, &mode);
+        if (controls.find(libcamera::controls::DIGITAL_GAIN) != controls.end()) {
+                info->manual_gain_ctrl = libcamera::controls::DIGITAL_GAIN;
+                info->gain_max = controls.at(libcamera::controls::DIGITAL_GAIN).max().get<float>();
+        } else if (controls.find(libcamera::controls::ANALOGUE_GAIN) != controls.end()) {
+                info->manual_gain_ctrl = libcamera::controls::ANALOGUE_GAIN;
+                info->gain_max = controls.at(libcamera::controls::ANALOGUE_GAIN).max().get<float>();
+        }
 
-        // // Trigger continuous auto focus if the sensor supports it
-        // if (mp_camera_query_control(
-        //             info->camera, V4L2_CID_FOCUS_AUTO, NULL)) {
-        //         info->has_auto_focus_continuous = true;
-        //         mp_camera_control_set_bool_bg(
-        //                 info->camera, V4L2_CID_FOCUS_AUTO, true);
-        // }
-        // if (mp_camera_query_control(
-        //             info->camera, V4L2_CID_AUTO_FOCUS_START, NULL)) {
-        //         info->has_auto_focus_start = true;
-        // }
+        if (controls.find(libcamera::controls::AE_ENABLE) != controls.end()) {
+                info->auto_exposure_ctrl = libcamera::controls::AE_ENABLE;
+        }
 
-        // MPControl control;
-        // if (mp_camera_query_control(info->camera, V4L2_CID_GAIN, &control)) {
-        //         info->gain_ctrl = V4L2_CID_GAIN;
-        //         info->gain_max = control.max;
-        // } else if (mp_camera_query_control(
-        //                    info->camera, V4L2_CID_ANALOGUE_GAIN, &control)) {
-        //         info->gain_ctrl = V4L2_CID_ANALOGUE_GAIN;
-        //         info->gain_max = control.max;
-        // }
+        if (controls.find(libcamera::controls::EXPOSURE_VALUE) != controls.end()) {
+                info->manual_exposure_ctrl = libcamera::controls::EXPOSURE_VALUE;
+        }
 }
 
 static void
@@ -275,11 +263,11 @@ update_process_pipeline()
         // Grab the latest control values
         // if (!current_controls.gain_is_manual) {
         //         current_controls.gain =
-        //                 mp_camera_control_get_int32(info->camera, info->gain_ctrl);
+        //                 info->camera->properties().get(info->manual_gain_ctrl).get<int>();
         // }
         // if (!current_controls.exposure_is_manual) {
         //         current_controls.exposure =
-        //                 mp_camera_control_get_int32(info->camera, V4L2_CID_EXPOSURE);
+        //                 info->camera->properties().get(info->manual_exposure_ctrl).get<int>();
         // }
 
         struct mp_process_pipeline_state pipeline_state = {
@@ -294,8 +282,6 @@ update_process_pipeline()
                 .gain_max = info->gain_max,
                 .exposure_is_manual = current_controls.exposure_is_manual,
                 .exposure = current_controls.exposure,
-                .has_auto_focus_continuous = info->has_auto_focus_continuous,
-                .has_auto_focus_start = info->has_auto_focus_start,
                 .save_dng = save_dng,
         };
         mp_process_pipeline_update_state(&pipeline_state);
@@ -348,6 +334,46 @@ static void camera_stop(const camera_info *info)
                 }
         }
         buffer_maps.clear();
+}
+
+static void queue_request(libcamera::Request *request)
+{
+        struct camera_info *info = &cameras[current_camera->index];
+
+        bool desired_wants_focus = want_focus;
+        struct control_state desired_controls = current_controls;
+
+        if (captures_remaining > 0) {
+                desired_wants_focus = false;
+                desired_controls.gain_is_manual = true;
+                desired_controls.exposure_is_manual = true;
+        }
+
+        // Set controls
+        libcamera::ControlList *controls = &request->controls();
+
+        if (info->auto_focus_ctrl) {
+                controls->set(info->auto_focus_ctrl, libcamera::ControlValue(desired_wants_focus));
+        }
+
+        if (info->auto_gain_ctrl) {
+                controls->set(info->auto_gain_ctrl, libcamera::ControlValue(!desired_controls.gain_is_manual));
+                controls->set(info->manual_gain_ctrl, libcamera::ControlValue((float) desired_controls.gain));
+        }
+
+        if (info->auto_exposure_ctrl) {
+                controls->set(info->auto_exposure_ctrl, libcamera::ControlValue(!desired_controls.exposure_is_manual));
+                controls->set(info->manual_exposure_ctrl, libcamera::ControlValue((float) desired_controls.exposure));
+        }
+
+        int ret = info->camera->queueRequest(request);
+        if (ret) {
+                printf("Failed to queue request: %s\n", strerror(-ret));
+        }
+
+        if (desired_wants_focus) {
+                want_focus = false;
+        }
 }
 
 static void camera_start(const camera_info *info, libcamera::CameraConfiguration * cfg)
@@ -411,10 +437,7 @@ static void camera_start(const camera_info *info, libcamera::CameraConfiguration
         active_stream = stream;
 
         for (const auto & buffer_map : buffer_maps) {
-                ret = info->camera->queueRequest(buffer_map.request.get());
-                if (ret) {
-                        printf("Failed to queue request for camera %s: %s\n", config->id, strerror(-ret));
-                }
+                queue_request(buffer_map.request.get());
         }
 }
 
@@ -424,11 +447,6 @@ capture(MPPipeline *pipeline, const void *data)
         struct camera_info *info = &cameras[current_camera->index];
 
         captures_remaining = burst_length;
-
-        // Disable the autogain/exposure while taking the burst
-        // mp_camera_control_set_int32(info->camera, V4L2_CID_AUTOGAIN, 0);
-        // mp_camera_control_set_int32(
-        //         info->camera, V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL);
 
         // Change camera mode for capturing
         camera_stop(info);
@@ -461,10 +479,8 @@ release_buffer(MPPipeline *pipeline, const MPBuffer *buffer)
                 return;
         }
 
-        struct camera_info *info = &cameras[current_camera->index];
-
         buffer_maps[buffer->index].request->reuse(libcamera::Request::ReuseBuffers);
-        info->camera->queueRequest(buffer_maps[buffer->index].request.get());
+        queue_request(buffer_maps[buffer->index].request.get());
 }
 
 void
@@ -475,70 +491,6 @@ mp_io_pipeline_release_buffer(const MPBuffer *buffer)
                 (MPPipelineCallback)release_buffer,
                 buffer,
                 sizeof(MPBuffer));
-}
-
-// static pid_t focus_continuous_task = 0;
-// static pid_t start_focus_task = 0;
-// static void
-// start_focus(struct camera_info *info)
-// {
-//         // only run 1 manual focus at once
-//         if (!mp_camera_check_task_complete(info->camera, start_focus_task) ||
-//             !mp_camera_check_task_complete(info->camera, focus_continuous_task))
-//                 return;
-
-//         if (info->has_auto_focus_continuous) {
-//                 focus_continuous_task = mp_camera_control_set_bool_bg(
-//                         info->camera, V4L2_CID_FOCUS_AUTO, 1);
-//         } else if (info->has_auto_focus_start) {
-//                 start_focus_task = mp_camera_control_set_bool_bg(
-//                         info->camera, V4L2_CID_AUTO_FOCUS_START, 1);
-//         }
-// }
-
-static void
-update_controls()
-{
-        // Don't update controls while capturing
-        // if (captures_remaining > 0) {
-        //         return;
-        // }
-
-        // struct camera_info *info = &cameras[current_camera->index];
-
-        // if (want_focus) {
-        //         start_focus(info);
-        //         want_focus = false;
-        // }
-
-        // if (current_controls.gain_is_manual != desired_controls.gain_is_manual) {
-        //         mp_camera_control_set_bool_bg(info->camera,
-        //                                       V4L2_CID_AUTOGAIN,
-        //                                       !desired_controls.gain_is_manual);
-        // }
-
-        // if (desired_controls.gain_is_manual &&
-        //     current_controls.gain != desired_controls.gain) {
-        //         mp_camera_control_set_int32_bg(
-        //                 info->camera, info->gain_ctrl, desired_controls.gain);
-        // }
-
-        // if (current_controls.exposure_is_manual !=
-        //     desired_controls.exposure_is_manual) {
-        //         mp_camera_control_set_int32_bg(info->camera,
-        //                                        V4L2_CID_EXPOSURE_AUTO,
-        //                                        desired_controls.exposure_is_manual ?
-        //                                                V4L2_EXPOSURE_MANUAL :
-        //                                                V4L2_EXPOSURE_AUTO);
-        // }
-
-        // if (desired_controls.exposure_is_manual &&
-        //     current_controls.exposure != desired_controls.exposure) {
-        //         mp_camera_control_set_int32_bg(
-        //                 info->camera, V4L2_CID_EXPOSURE, desired_controls.exposure);
-        // }
-
-        current_controls = desired_controls;
 }
 
 struct FrameData {
@@ -559,9 +511,6 @@ on_frame_impl(MPPipeline *pipeline, FrameData *frame_data)
                 .data = buffer_maps[frame_data->buffer_index].data,
                 .fd = 0,
         };
-
-        // Only update controls right after a frame was captured
-        update_controls();
 
         // When the mode is switched while capturing we get a couple blank frames,
         // presumably from buffers made ready during the switch. Ignore these.
@@ -600,19 +549,6 @@ on_frame_impl(MPPipeline *pipeline, FrameData *frame_data)
 
                 if (captures_remaining == 0) {
                         struct camera_info *info = &cameras[current_camera->index];
-
-                        // Restore the auto exposure and gain if needed
-                        // if (!current_controls.exposure_is_manual) {
-                        //         mp_camera_control_set_int32_bg(
-                        //                 info->camera,
-                        //                 V4L2_CID_EXPOSURE_AUTO,
-                        //                 V4L2_EXPOSURE_AUTO);
-                        // }
-
-                        // if (!current_controls.gain_is_manual) {
-                        //         mp_camera_control_set_bool_bg(
-                        //                 info->camera, V4L2_CID_AUTOGAIN, true);
-                        // }
 
                         // Go back to preview mode
                         camera_stop(info);
@@ -667,11 +603,6 @@ update_state(MPPipeline *pipeline, const struct mp_io_pipeline_state *state)
                         camera_stop(info);
                 }
 
-                // if (capture_source) {
-                //         g_source_destroy(capture_source);
-                //         capture_source = NULL;
-                // }
-
                 current_camera = state->camera;
 
                 if (current_camera) {
@@ -679,22 +610,6 @@ update_state(MPPipeline *pipeline, const struct mp_io_pipeline_state *state)
 
                         mode = current_camera->preview_mode;
                         camera_start(info, info->preview_cfg.get());
-
-                        // capture_source = mp_pipeline_add_capture_source(
-                        //         pipeline, info->camera, on_frame, NULL);
-
-                        // current_controls.gain_is_manual =
-                        //         mp_camera_control_get_bool(info->camera,
-                        //                                    V4L2_CID_AUTOGAIN) == 0;
-                        // current_controls.gain = mp_camera_control_get_int32(
-                        //         info->camera, info->gain_ctrl);
-
-                        // current_controls.exposure_is_manual =
-                        //         mp_camera_control_get_int32(
-                        //                 info->camera, V4L2_CID_EXPOSURE_AUTO) ==
-                        //         V4L2_EXPOSURE_MANUAL;
-                        // current_controls.exposure = mp_camera_control_get_int32(
-                        //         info->camera, V4L2_CID_EXPOSURE);
                 }
         }
 
@@ -710,16 +625,16 @@ update_state(MPPipeline *pipeline, const struct mp_io_pipeline_state *state)
         save_dng = state->save_dng;
 
         if (current_camera) {
-                struct control_state previous_desired = desired_controls;
+                struct control_state previous_desired = current_controls;
 
-                desired_controls.gain_is_manual = state->gain_is_manual;
-                desired_controls.gain = state->gain;
-                desired_controls.exposure_is_manual = state->exposure_is_manual;
-                desired_controls.exposure = state->exposure;
+                current_controls.gain_is_manual = state->gain_is_manual;
+                current_controls.gain = state->gain;
+                current_controls.exposure_is_manual = state->exposure_is_manual;
+                current_controls.exposure = state->exposure;
 
                 has_changed = has_changed ||
                               memcmp(&previous_desired,
-                                     &desired_controls,
+                                     &current_controls,
                                      sizeof(struct control_state)) != 0 ||
                               flash_enabled != state->flash_enabled;
 

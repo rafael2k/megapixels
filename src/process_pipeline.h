@@ -26,9 +26,6 @@ struct mp_process_pipeline_state {
         bool exposure_is_manual;
         int exposure;
 
-        bool has_auto_focus_continuous;
-        bool has_auto_focus_start;
-
         bool save_dng;
 };
 

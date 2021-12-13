@@ -807,8 +807,6 @@ update_state(MPPipeline *pipeline, const struct mp_process_pipeline_state *state
                 .gain_max = gain_max,
                 .exposure_is_manual = exposure_is_manual,
                 .exposure = exposure,
-                .has_auto_focus_continuous = state->has_auto_focus_continuous,
-                .has_auto_focus_start = state->has_auto_focus_start,
         };
         mp_main_update_state(&main_state);
 }

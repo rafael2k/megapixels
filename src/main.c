@@ -50,9 +50,6 @@ static int gain_max;
 static bool exposure_is_manual = false;
 static int exposure;
 
-static bool has_auto_focus_continuous;
-static bool has_auto_focus_start;
-
 static bool flash_enabled = true;
 
 static bool setting_save_dng;
@@ -137,9 +134,6 @@ update_state(const struct mp_main_state *state)
                 if (!exposure_is_manual) {
                         exposure = state->exposure;
                 }
-
-                has_auto_focus_continuous = state->has_auto_focus_continuous;
-                has_auto_focus_start = state->has_auto_focus_start;
         }
 
         preview_buffer_width = state->image_width;
@@ -672,9 +666,7 @@ preview_pressed(GtkGestureClick *gesture, int n_press, double x, double y)
         }
 
         // Tapped preview image itself, try focussing
-        if (has_auto_focus_start) {
-                mp_io_pipeline_focus();
-        }
+        mp_io_pipeline_focus();
 }
 
 static void
