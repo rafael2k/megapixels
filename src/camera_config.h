@@ -8,6 +8,12 @@
 #define MP_MAX_CAMERAS 5
 #define MP_MAX_LINKS 10
 
+typedef enum {
+        MP_APP_MODE_PICTURE,
+        MP_APP_MODE_VIDEO,
+        MP_APP_MODE_SCAN,
+} MPAppMode;
+
 struct mp_media_link_config {
         char source_name[100];
         char target_name[100];

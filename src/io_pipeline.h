@@ -5,6 +5,8 @@
 struct mp_io_pipeline_state {
         const struct mp_camera_config *camera;
 
+        MPAppMode app_mode;
+
         int burst_length;
 
         int preview_width;

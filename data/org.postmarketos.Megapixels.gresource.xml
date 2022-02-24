@@ -11,6 +11,9 @@
     <file preprocess="xml-stripblanks">shutter-button-symbolic.svg</file>
     <file preprocess="xml-stripblanks">shutter-symbolic.svg</file>
     <file preprocess="xml-stripblanks">switch-camera-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">photo-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">video-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">scan-symbolic.svg</file>
     <file>blit.vert</file>
     <file>blit.frag</file>
     <file>solid.vert</file>

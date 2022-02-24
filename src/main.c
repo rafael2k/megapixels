@@ -36,7 +36,9 @@ enum user_control { USER_CONTROL_ISO, USER_CONTROL_SHUTTER };
 
 static bool camera_is_initialized = false;
 static const struct mp_camera_config *camera = NULL;
-static MPCameraMode mode;
+static MPCameraMode camera_mode;
+
+static MPAppMode app_mode = MP_APP_MODE_PICTURE;
 
 static int preview_width = -1;
 static int preview_height = -1;
@@ -77,6 +79,12 @@ GtkWidget *scanned_codes;
 GtkWidget *preview_top_box;
 GtkWidget *preview_bottom_box;
 GtkWidget *flash_button;
+GtkWidget *picture_controls;
+GtkWidget *shutter_button;
+GtkWidget *open_last_button;
+GtkWidget *open_folder_button;
+GtkWidget *scan_many_box;
+GtkWidget *scan_many_switch;
 
 GSettings *settings;
 
@@ -102,6 +110,7 @@ update_io_pipeline()
 {
         struct mp_io_pipeline_state io_state = {
                 .camera = camera,
+                .app_mode = app_mode,
                 .burst_length = burst_length,
                 .preview_width = preview_width,
                 .preview_height = preview_height,
@@ -127,7 +136,7 @@ update_state(const struct mp_main_state *state)
         }
 
         if (camera == state->camera) {
-                mode = state->mode;
+                camera_mode = state->mode;
 
                 if (!gain_is_manual) {
                         gain = state->gain;
@@ -159,33 +168,6 @@ mp_main_update_state(const struct mp_main_state *state)
                                    (GSourceFunc)update_state,
                                    state_copy,
                                    free);
-}
-
-static bool
-set_zbar_result(MPZBarScanResult *result)
-{
-        if (zbar_result) {
-                for (uint8_t i = 0; i < zbar_result->size; ++i) {
-                        free(zbar_result->codes[i].data);
-                }
-
-                free(zbar_result);
-        }
-
-        zbar_result = result;
-        gtk_widget_queue_draw(preview);
-
-        return false;
-}
-
-void
-mp_main_set_zbar_result(MPZBarScanResult *result)
-{
-        g_main_context_invoke_full(g_main_context_default(),
-                                   G_PRIORITY_DEFAULT_IDLE,
-                                   (GSourceFunc)set_zbar_result,
-                                   result,
-                                   NULL);
 }
 
 static bool
@@ -350,6 +332,9 @@ preview_draw(GtkGLArea *area, GdkGLContext *ctx, gpointer data)
         }
 
         if (!camera_is_initialized) {
+                glClearColor(0, 0, 0, 1);
+                glClear(GL_COLOR_BUFFER_BIT);
+
                 return FALSE;
         }
 
@@ -376,9 +361,9 @@ preview_draw(GtkGLArea *area, GdkGLContext *ctx, gpointer data)
                 GLfloat cos_rot = rotation_list[(4 + rotation_index - 1) % 4];
                 GLfloat matrix[9] = {
                         // clang-format off
-			cos_rot,  sin_rot, 0,
-			-sin_rot, cos_rot, 0,
-			0,              0, 1,
+                        cos_rot,  sin_rot, 0,
+                        -sin_rot, cos_rot, 0,
+                        0,              0, 1,
                         // clang-format on
                 };
                 glUniformMatrix3fv(blit_uniform_transform, 1, GL_FALSE, matrix);
@@ -504,13 +489,27 @@ run_open_last_action(GSimpleAction *action, GVariant *param, gpointer user_data)
 }
 
 void
-run_open_photos_action(GSimpleAction *action, GVariant *param, gpointer user_data)
+run_open_folder_action(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
+        const gchar *dir = NULL;
+        switch (app_mode) {
+        case MP_APP_MODE_PICTURE:
+                dir = g_get_user_special_dir(G_USER_DIRECTORY_PICTURES);
+                break;
+        case MP_APP_MODE_VIDEO:
+                dir = g_get_user_special_dir(G_USER_DIRECTORY_VIDEOS);
+                break;
+        default:
+                assert(false);
+        }
+        assert(dir);
+
         char uri[270];
+        sprintf(uri, "file://%s", dir);
+
         g_autoptr(GError) error = NULL;
-        sprintf(uri, "file://%s", g_get_user_special_dir(G_USER_DIRECTORY_PICTURES));
         if (!g_app_info_launch_default_for_uri(uri, NULL, &error)) {
-                g_printerr("Could not launch image viewer: %s\n", error->message);
+                g_printerr("Could not launch file explorer: %s\n", error->message);
         }
 }
 
@@ -569,9 +568,13 @@ check_point_inside_bounds(int x, int y, int *bounds_x, int *bounds_y)
         return right && left && top && bottom;
 }
 
+static GtkWidget *zbar_dialog = NULL;
+
 static void
 on_zbar_dialog_response(GtkDialog *dialog, int response, char *data)
 {
+        assert(GTK_WIDGET(dialog) == zbar_dialog);
+
         g_autoptr(GError) error = NULL;
         switch (response) {
         case GTK_RESPONSE_YES:
@@ -591,12 +594,16 @@ on_zbar_dialog_response(GtkDialog *dialog, int response, char *data)
 
         g_free(data);
         gtk_window_destroy(GTK_WINDOW(dialog));
+        zbar_dialog = NULL;
 }
 
 static void
 on_zbar_code_tapped(GtkWidget *widget, const MPZBarCode *code)
 {
-        GtkWidget *dialog;
+        if (zbar_dialog) {
+                return;
+        }
+
         GtkDialogFlags flags = GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT;
         bool data_is_url =
                 g_uri_is_valid(code->data, G_URI_FLAGS_PARSE_RELAXED, NULL);
@@ -604,7 +611,7 @@ on_zbar_code_tapped(GtkWidget *widget, const MPZBarCode *code)
         char *data = strdup(code->data);
 
         if (data_is_url) {
-                dialog = gtk_message_dialog_new(
+                zbar_dialog = gtk_message_dialog_new(
                         GTK_WINDOW(gtk_widget_get_root(widget)),
                         flags,
                         GTK_MESSAGE_QUESTION,
@@ -612,10 +619,12 @@ on_zbar_code_tapped(GtkWidget *widget, const MPZBarCode *code)
                         "Found a URL '%s' encoded in a %s.",
                         code->data,
                         code->type);
-                gtk_dialog_add_buttons(
-                        GTK_DIALOG(dialog), "_Open URL", GTK_RESPONSE_YES, NULL);
+                gtk_dialog_add_buttons(GTK_DIALOG(zbar_dialog),
+                                       "_Open URL",
+                                       GTK_RESPONSE_YES,
+                                       NULL);
         } else {
-                dialog = gtk_message_dialog_new(
+                zbar_dialog = gtk_message_dialog_new(
                         GTK_WINDOW(gtk_widget_get_root(widget)),
                         flags,
                         GTK_MESSAGE_QUESTION,
@@ -623,9 +632,11 @@ on_zbar_code_tapped(GtkWidget *widget, const MPZBarCode *code)
                         "Found data encoded in a %s.",
                         code->type);
                 gtk_message_dialog_format_secondary_markup(
-                        GTK_MESSAGE_DIALOG(dialog), "<small>%s</small>", code->data);
+                        GTK_MESSAGE_DIALOG(zbar_dialog),
+                        "<small>%s</small>",
+                        code->data);
         }
-        gtk_dialog_add_buttons(GTK_DIALOG(dialog),
+        gtk_dialog_add_buttons(GTK_DIALOG(zbar_dialog),
                                "_Copy",
                                GTK_RESPONSE_ACCEPT,
                                "_Cancel",
@@ -633,9 +644,43 @@ on_zbar_code_tapped(GtkWidget *widget, const MPZBarCode *code)
                                NULL);
 
         g_signal_connect(
-                dialog, "response", G_CALLBACK(on_zbar_dialog_response), data);
+                zbar_dialog, "response", G_CALLBACK(on_zbar_dialog_response), data);
 
-        gtk_widget_show(GTK_WIDGET(dialog));
+        gtk_widget_show(GTK_WIDGET(zbar_dialog));
+}
+
+static bool
+set_zbar_result(MPZBarScanResult *result)
+{
+        if (zbar_result) {
+                mp_zbar_scan_result_free(zbar_result);
+                zbar_result = NULL;
+        }
+
+        const bool many = gtk_switch_get_active(GTK_SWITCH(scan_many_switch));
+
+        if (many) {
+                zbar_result = result;
+                gtk_widget_queue_draw(preview);
+        } else if (result) {
+                if (result->size > 0) {
+                        on_zbar_code_tapped(preview, &result->codes[0]);
+                }
+
+                mp_zbar_scan_result_free(result);
+        }
+
+        return false;
+}
+
+void
+mp_main_set_zbar_result(MPZBarScanResult *result)
+{
+        g_main_context_invoke_full(g_main_context_default(),
+                                   G_PRIORITY_DEFAULT_IDLE,
+                                   (GSourceFunc)set_zbar_result,
+                                   result,
+                                   NULL);
 }
 
 static void
@@ -695,6 +740,65 @@ static void
 run_open_settings_action(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
         gtk_stack_set_visible_child_name(GTK_STACK(main_stack), "settings");
+}
+
+static void
+run_open_mode_picker(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+        gtk_stack_set_visible_child_name(GTK_STACK(main_stack), "mode_picker");
+}
+
+static void
+run_set_mode(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+        gtk_stack_set_visible_child_name(GTK_STACK(main_stack), "main");
+
+        size_t size;
+        const char *mode_str = g_variant_get_string(param, &size);
+        MPAppMode mode;
+        if (strncmp(mode_str, "picture", size) == 0) {
+                mode = MP_APP_MODE_PICTURE;
+        } else if (strncmp(mode_str, "video", size) == 0) {
+                mode = MP_APP_MODE_VIDEO;
+        } else if (strncmp(mode_str, "scan", size) == 0) {
+                mode = MP_APP_MODE_SCAN;
+        } else {
+                assert(false);
+        }
+
+        if (mode == app_mode) {
+                return;
+        }
+
+        app_mode = mode;
+
+        switch (app_mode) {
+        case MP_APP_MODE_PICTURE:
+                gtk_widget_set_visible(picture_controls, true);
+                gtk_widget_set_visible(shutter_button, true);
+                gtk_widget_set_visible(open_last_button, true);
+                gtk_widget_set_visible(open_folder_button, true);
+                gtk_widget_set_visible(scan_many_box, false);
+                break;
+        case MP_APP_MODE_VIDEO:
+                gtk_widget_set_visible(picture_controls, true);
+                gtk_widget_set_visible(shutter_button, true);
+                gtk_widget_set_visible(open_last_button, false);
+                gtk_widget_set_visible(open_folder_button, true);
+                gtk_widget_set_visible(scan_many_box, false);
+                break;
+        case MP_APP_MODE_SCAN:
+                gtk_widget_set_visible(picture_controls, false);
+                gtk_widget_set_visible(shutter_button, false);
+                gtk_widget_set_visible(open_last_button, false);
+                gtk_widget_set_visible(open_folder_button, false);
+                gtk_widget_set_visible(scan_many_box, true);
+                break;
+        default:
+                assert(false);
+        }
+
+        update_io_pipeline();
 }
 
 static void
@@ -872,9 +976,12 @@ on_realize(GtkWidget *window, gpointer *data)
 }
 
 static GSimpleAction *
-create_simple_action(GtkApplication *app, const char *name, GCallback callback)
+create_simple_action(GtkApplication *app,
+                     const char *name,
+                     const GVariantType *param_type,
+                     GCallback callback)
 {
-        GSimpleAction *action = g_simple_action_new(name, NULL);
+        GSimpleAction *action = g_simple_action_new(name, param_type);
         g_signal_connect(action, "activate", callback, app);
         g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(action));
         return action;
@@ -1004,9 +1111,9 @@ activate(GtkApplication *app, gpointer data)
                 "/org/postmarketos/Megapixels/camera.ui");
 
         GtkWidget *window = GTK_WIDGET(gtk_builder_get_object(builder, "window"));
-        GtkWidget *iso_button =
+        GtkWidget *iso_controls_button =
                 GTK_WIDGET(gtk_builder_get_object(builder, "iso-controls-button"));
-        GtkWidget *shutter_button = GTK_WIDGET(
+        GtkWidget *shutter_controls_button = GTK_WIDGET(
                 gtk_builder_get_object(builder, "shutter-controls-button"));
         flash_button =
                 GTK_WIDGET(gtk_builder_get_object(builder, "flash-controls-button"));
@@ -1023,6 +1130,17 @@ activate(GtkApplication *app, gpointer data)
         preview_top_box = GTK_WIDGET(gtk_builder_get_object(builder, "top-box"));
         preview_bottom_box =
                 GTK_WIDGET(gtk_builder_get_object(builder, "bottom-box"));
+        picture_controls =
+                GTK_WIDGET(gtk_builder_get_object(builder, "picture-controls"));
+        shutter_button =
+                GTK_WIDGET(gtk_builder_get_object(builder, "shutter-button"));
+        open_last_button =
+                GTK_WIDGET(gtk_builder_get_object(builder, "open-last-button"));
+        open_folder_button =
+                GTK_WIDGET(gtk_builder_get_object(builder, "open-folder-button"));
+        scan_many_box = GTK_WIDGET(gtk_builder_get_object(builder, "scan-many-box"));
+        scan_many_switch =
+                GTK_WIDGET(gtk_builder_get_object(builder, "scan-many-switch"));
 
         g_signal_connect(window, "realize", G_CALLBACK(on_realize), NULL);
 
@@ -1033,24 +1151,33 @@ activate(GtkApplication *app, gpointer data)
         g_signal_connect(click, "pressed", G_CALLBACK(preview_pressed), NULL);
         gtk_widget_add_controller(preview, GTK_EVENT_CONTROLLER(click));
 
-        g_signal_connect(iso_button, "clicked", G_CALLBACK(open_iso_controls), NULL);
         g_signal_connect(
-                shutter_button, "clicked", G_CALLBACK(open_shutter_controls), NULL);
+                iso_controls_button, "clicked", G_CALLBACK(open_iso_controls), NULL);
+        g_signal_connect(shutter_controls_button,
+                         "clicked",
+                         G_CALLBACK(open_shutter_controls),
+                         NULL);
         g_signal_connect(
                 flash_button, "clicked", G_CALLBACK(flash_button_clicked), NULL);
 
         // Setup actions
-        create_simple_action(app, "capture", G_CALLBACK(run_capture_action));
+        create_simple_action(app, "capture", NULL, G_CALLBACK(run_capture_action));
         create_simple_action(
-                app, "switch-camera", G_CALLBACK(run_camera_switch_action));
+                app, "switch-camera", NULL, G_CALLBACK(run_camera_switch_action));
         create_simple_action(
-                app, "open-settings", G_CALLBACK(run_open_settings_action));
+                app, "open-settings", NULL, G_CALLBACK(run_open_settings_action));
         create_simple_action(
-                app, "close-settings", G_CALLBACK(run_close_settings_action));
-        create_simple_action(app, "open-last", G_CALLBACK(run_open_last_action));
-        create_simple_action(app, "open-photos", G_CALLBACK(run_open_photos_action));
-        create_simple_action(app, "about", G_CALLBACK(run_about_action));
-        create_simple_action(app, "quit", G_CALLBACK(run_quit_action));
+                app, "close-settings", NULL, G_CALLBACK(run_close_settings_action));
+        create_simple_action(
+                app, "open-mode-picker", NULL, G_CALLBACK(run_open_mode_picker));
+        create_simple_action(
+                app, "set-mode", g_variant_type_new("s"), G_CALLBACK(run_set_mode));
+        create_simple_action(
+                app, "open-last", NULL, G_CALLBACK(run_open_last_action));
+        create_simple_action(
+                app, "open-folder", NULL, G_CALLBACK(run_open_folder_action));
+        create_simple_action(app, "about", NULL, G_CALLBACK(run_about_action));
+        create_simple_action(app, "quit", NULL, G_CALLBACK(run_quit_action));
 
         // Setup shortcuts
         const char *capture_accels[] = { "space", NULL };

@@ -16,6 +16,8 @@ typedef struct {
         uint8_t size;
 } MPZBarScanResult;
 
+void mp_zbar_scan_result_free(MPZBarScanResult *result);
+
 void mp_zbar_pipeline_start();
 void mp_zbar_pipeline_stop();
 

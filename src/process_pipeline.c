@@ -31,7 +31,9 @@ static volatile int frames_received = 0;
 static const struct mp_camera_config *camera;
 static int camera_rotation;
 
-static MPCameraMode mode;
+static MPCameraMode camera_mode;
+
+static MPAppMode app_mode;
 
 static int burst_length;
 static int captures_remaining = 0;
@@ -323,8 +325,9 @@ process_image_for_preview(const uint8_t *image)
         glTexImage2D(GL_TEXTURE_2D,
                      0,
                      GL_LUMINANCE,
-                     mp_pixel_format_width_to_bytes(mode.pixel_format, mode.width),
-                     mode.height,
+                     mp_pixel_format_width_to_bytes(camera_mode.pixel_format,
+                                                    camera_mode.width),
+                     camera_mode.height,
                      0,
                      GL_LUMINANCE,
                      GL_UNSIGNED_BYTE,
@@ -417,8 +420,8 @@ process_image_for_capture(const uint8_t *image, int count)
 
         // Define TIFF thumbnail
         TIFFSetField(tif, TIFFTAG_SUBFILETYPE, 1);
-        TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, mode.width >> 4);
-        TIFFSetField(tif, TIFFTAG_IMAGELENGTH, mode.height >> 4);
+        TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, camera_mode.width >> 4);
+        TIFFSetField(tif, TIFFTAG_IMAGELENGTH, camera_mode.height >> 4);
         TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 8);
         TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
         TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB);
@@ -467,8 +470,8 @@ process_image_for_capture(const uint8_t *image, int count)
         // Write black thumbnail, only windows uses this
         {
                 unsigned char *buf =
-                        (unsigned char *)calloc(1, (mode.width >> 4) * 3);
-                for (int row = 0; row < (mode.height >> 4); row++) {
+                        (unsigned char *)calloc(1, (camera_mode.width >> 4) * 3);
+                for (int row = 0; row < (camera_mode.height >> 4); row++) {
                         TIFFWriteScanline(tif, buf, row, 0);
                 }
                 free(buf);
@@ -477,11 +480,11 @@ process_image_for_capture(const uint8_t *image, int count)
 
         // Define main photo
         TIFFSetField(tif, TIFFTAG_SUBFILETYPE, 0);
-        TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, mode.width);
-        TIFFSetField(tif, TIFFTAG_IMAGELENGTH, mode.height);
+        TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, camera_mode.width);
+        TIFFSetField(tif, TIFFTAG_IMAGELENGTH, camera_mode.height);
         TIFFSetField(tif,
                      TIFFTAG_BITSPERSAMPLE,
-                     mp_pixel_format_bits_per_pixel(mode.pixel_format));
+                     mp_pixel_format_bits_per_pixel(camera_mode.pixel_format));
         TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_CFA);
         TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
         TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
@@ -490,18 +493,19 @@ process_image_for_capture(const uint8_t *image, int count)
 #if (TIFFLIB_VERSION < 20201219) && !LIBTIFF_CFA_PATTERN
         TIFFSetField(tif,
                      TIFFTAG_CFAPATTERN,
-                     mp_pixel_format_cfa_pattern(mode.pixel_format));
+                     mp_pixel_format_cfa_pattern(camera_mode.pixel_format));
 #else
         TIFFSetField(tif,
                      TIFFTAG_CFAPATTERN,
                      4,
-                     mp_pixel_format_cfa_pattern(mode.pixel_format));
+                     mp_pixel_format_cfa_pattern(camera_mode.pixel_format));
 #endif
         printf("TIFF version %d\n", TIFFLIB_VERSION);
         int whitelevel = camera->whitelevel;
         if (!whitelevel) {
-                whitelevel =
-                        (1 << mp_pixel_format_pixel_depth(mode.pixel_format)) - 1;
+                whitelevel = (1 << mp_pixel_format_pixel_depth(
+                                      camera_mode.pixel_format)) -
+                             1;
         }
         TIFFSetField(tif, TIFFTAG_WHITELEVEL, 1, &whitelevel);
         if (camera->blacklevel) {
@@ -514,23 +518,24 @@ process_image_for_capture(const uint8_t *image, int count)
         uint8_t *output_image = (uint8_t *)image;
 
         // Repack 10-bit image from sensor format into a sequencial format
-        if (mp_pixel_format_bits_per_pixel(mode.pixel_format) == 10) {
-                output_image = malloc(mp_pixel_format_width_to_bytes(
-                                              mode.pixel_format, mode.width) *
-                                      mode.height);
+        if (mp_pixel_format_bits_per_pixel(camera_mode.pixel_format) == 10) {
+                output_image =
+                        malloc(mp_pixel_format_width_to_bytes(
+                                       camera_mode.pixel_format, camera_mode.width) *
+                               camera_mode.height);
 
                 repack_image_sequencial(
-                        image, output_image, mode.width, mode.height);
+                        image, output_image, camera_mode.width, camera_mode.height);
         }
 
-        for (int row = 0; row < mode.height; row++) {
-                TIFFWriteScanline(
-                        tif,
-                        (void *)output_image +
-                                (row * mp_pixel_format_width_to_bytes(
-                                               mode.pixel_format, mode.width)),
-                        row,
-                        0);
+        for (int row = 0; row < camera_mode.height; row++) {
+                TIFFWriteScanline(tif,
+                                  (void *)output_image +
+                                          (row * mp_pixel_format_width_to_bytes(
+                                                         camera_mode.pixel_format,
+                                                         camera_mode.width)),
+                                  row,
+                                  0);
         }
         TIFFWriteDirectory(tif);
 
@@ -548,9 +553,9 @@ process_image_for_capture(const uint8_t *image, int count)
 
         TIFFSetField(tif,
                      EXIFTAG_EXPOSURETIME,
-                     (mode.frame_interval.numerator /
-                      (float)mode.frame_interval.denominator) /
-                             ((float)mode.height / (float)exposure));
+                     (camera_mode.frame_interval.numerator /
+                      (float)camera_mode.frame_interval.denominator) /
+                             ((float)camera_mode.height / (float)exposure));
         if (camera->iso_min && camera->iso_max) {
                 uint16_t isospeed = remap(
                         gain - 1, 0, gain_max, camera->iso_min, camera->iso_max);
@@ -669,19 +674,23 @@ process_image(MPPipeline *pipeline, const MPBuffer *buffer)
         clock_t t1 = clock();
 #endif
 
-        size_t size = mp_pixel_format_width_to_bytes(mode.pixel_format, mode.width) *
-                      mode.height;
+        size_t size = mp_pixel_format_width_to_bytes(camera_mode.pixel_format,
+                                                     camera_mode.width) *
+                      camera_mode.height;
         uint8_t *image = malloc(size);
         memcpy(image, buffer->data, size);
         mp_io_pipeline_release_buffer(buffer->index);
 
-        MPZBarImage *zbar_image = mp_zbar_image_new(image,
-                                                    mode.pixel_format,
-                                                    mode.width,
-                                                    mode.height,
-                                                    camera_rotation,
-                                                    camera->mirrored);
-        mp_zbar_pipeline_process_image(mp_zbar_image_ref(zbar_image));
+        MPZBarImage *zbar_image = NULL;
+        if (app_mode == MP_APP_MODE_SCAN) {
+                zbar_image = mp_zbar_image_new(image,
+                                               camera_mode.pixel_format,
+                                               camera_mode.width,
+                                               camera_mode.height,
+                                               camera_rotation,
+                                               camera->mirrored);
+                mp_zbar_pipeline_process_image(mp_zbar_image_ref(zbar_image));
+        }
 
 #ifdef PROFILE_PROCESS
         clock_t t2 = clock();
@@ -705,7 +714,11 @@ process_image(MPPipeline *pipeline, const MPBuffer *buffer)
                 assert(!thumb);
         }
 
-        mp_zbar_image_unref(zbar_image);
+        if (app_mode == MP_APP_MODE_SCAN) {
+                mp_zbar_image_unref(zbar_image);
+        } else {
+                free(image);
+        }
 
         ++frames_processed;
         if (captures_remaining == 0) {
@@ -766,8 +779,8 @@ mp_process_pipeline_capture()
 static void
 on_output_changed(bool format_changed)
 {
-        output_buffer_width = mode.width / 2;
-        output_buffer_height = mode.height / 2;
+        output_buffer_width = camera_mode.width / 2;
+        output_buffer_height = camera_mode.height / 2;
 
         if (camera->rotate != 0 || camera->rotate != 180) {
                 int tmp = output_buffer_width;
@@ -795,7 +808,7 @@ on_output_changed(bool format_changed)
                 if (gles2_debayer)
                         gles2_debayer_free(gles2_debayer);
 
-                gles2_debayer = gles2_debayer_new(mode.pixel_format);
+                gles2_debayer = gles2_debayer_new(camera_mode.pixel_format);
                 check_gl();
 
                 gles2_debayer_use(gles2_debayer);
@@ -805,8 +818,8 @@ on_output_changed(bool format_changed)
                 gles2_debayer,
                 output_buffer_width,
                 output_buffer_height,
-                mode.width,
-                mode.height,
+                camera_mode.width,
+                camera_mode.height,
                 camera->rotate,
                 camera->mirrored,
                 camera->previewmatrix[0] == 0 ? NULL : camera->previewmatrix,
@@ -824,15 +837,16 @@ static void
 update_state(MPPipeline *pipeline, const struct mp_process_pipeline_state *state)
 {
         const bool output_changed =
-                !mp_camera_mode_is_equivalent(&mode, &state->mode) ||
+                !mp_camera_mode_is_equivalent(&camera_mode, &state->mode) ||
                 preview_width != state->preview_width ||
                 preview_height != state->preview_height ||
                 device_rotation != state->device_rotation;
 
-        const bool format_changed = mode.pixel_format != state->mode.pixel_format;
+        const bool format_changed =
+                camera_mode.pixel_format != state->mode.pixel_format;
 
         camera = state->camera;
-        mode = state->mode;
+        camera_mode = state->mode;
 
         preview_width = state->preview_width;
         preview_height = state->preview_height;
@@ -855,9 +869,15 @@ update_state(MPPipeline *pipeline, const struct mp_process_pipeline_state *state
                 on_output_changed(format_changed);
         }
 
+        if (app_mode != state->app_mode) {
+                assert(captures_remaining == 0);
+
+                app_mode = state->app_mode;
+        }
+
         struct mp_main_state main_state = {
                 .camera = camera,
-                .mode = mode,
+                .mode = camera_mode,
                 .image_width = output_buffer_width,
                 .image_height = output_buffer_height,
                 .gain_is_manual = state->gain_is_manual,

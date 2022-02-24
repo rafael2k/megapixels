@@ -45,6 +45,16 @@ mp_zbar_pipeline_stop()
         mp_pipeline_free(pipeline);
 }
 
+void
+mp_zbar_scan_result_free(MPZBarScanResult *result)
+{
+        for (uint8_t i = 0; i < result->size; ++i) {
+                free(result->codes[i].data);
+        }
+
+        free(result);
+}
+
 static bool
 is_3d_code(zbar_symbol_type_t type)
 {
@@ -266,6 +276,8 @@ process_image(MPPipeline *pipeline, MPZBarImage **_image)
 void
 mp_zbar_pipeline_process_image(MPZBarImage *image)
 {
+        assert(image);
+
         // If we haven't processed the previous frame yet, drop this one
         if (frames_received != frames_processed) {
                 mp_zbar_image_unref(image);

@@ -67,7 +67,9 @@ static struct device_info devices[MP_MAX_CAMERAS];
 static size_t num_devices = 0;
 
 static const struct mp_camera_config *camera = NULL;
-static MPCameraMode mode;
+static MPCameraMode camera_mode;
+
+static MPAppMode app_mode = MP_APP_MODE_PICTURE;
 
 static bool just_switched_mode = false;
 static int blank_frame_count = 0;
@@ -309,7 +311,8 @@ update_process_pipeline()
 
         struct mp_process_pipeline_state pipeline_state = {
                 .camera = camera,
-                .mode = mode,
+                .mode = camera_mode,
+                .app_mode = app_mode,
                 .burst_length = burst_length,
                 .save_dng = save_dng,
                 .preview_width = preview_width,
@@ -341,6 +344,8 @@ mp_io_pipeline_focus()
 static void
 capture(MPPipeline *pipeline, const void *data)
 {
+        assert(app_mode == MP_APP_MODE_PICTURE);
+
         struct camera_info *info = &cameras[camera->index];
 
         captures_remaining = burst_length;
@@ -354,8 +359,8 @@ capture(MPPipeline *pipeline, const void *data)
         mp_process_pipeline_sync();
         mp_camera_stop_capture(info->camera);
 
-        mode = camera->capture_mode;
-        mp_camera_set_mode(info->camera, &mode);
+        camera_mode = camera->capture_mode;
+        mp_camera_set_mode(info->camera, &camera_mode);
         just_switched_mode = true;
 
         mp_camera_start_capture(info->camera);
@@ -468,8 +473,8 @@ on_frame(MPBuffer buffer, void *_data)
         if (just_switched_mode) {
                 if (blank_frame_count < 20) {
                         // Only check a 10x10 area
-                        size_t test_size =
-                                MIN(10, mode.width) * MIN(10, mode.height);
+                        size_t test_size = MIN(10, camera_mode.width) *
+                                           MIN(10, camera_mode.height);
 
                         bool image_is_blank = true;
                         for (size_t i = 0; i < test_size; ++i) {
@@ -516,8 +521,8 @@ on_frame(MPBuffer buffer, void *_data)
                         mp_process_pipeline_sync();
                         mp_camera_stop_capture(info->camera);
 
-                        mode = camera->preview_mode;
-                        mp_camera_set_mode(info->camera, &mode);
+                        camera_mode = camera->preview_mode;
+                        mp_camera_set_mode(info->camera, &camera_mode);
                         just_switched_mode = true;
 
                         mp_camera_start_capture(info->camera);
@@ -570,8 +575,8 @@ update_state(MPPipeline *pipeline, const struct mp_io_pipeline_state *state)
                                              dev_info->interface_pad_id,
                                              true);
 
-                        mode = camera->preview_mode;
-                        mp_camera_set_mode(info->camera, &mode);
+                        camera_mode = camera->preview_mode;
+                        mp_camera_set_mode(info->camera, &camera_mode);
 
                         mp_camera_start_capture(info->camera);
                         capture_source = mp_pipeline_add_capture_source(
@@ -595,13 +600,15 @@ update_state(MPPipeline *pipeline, const struct mp_io_pipeline_state *state)
         has_changed = has_changed || burst_length != state->burst_length ||
                       preview_width != state->preview_width ||
                       preview_height != state->preview_height ||
-                      device_rotation != state->device_rotation;
+                      device_rotation != state->device_rotation ||
+                      app_mode != state->app_mode;
 
         burst_length = state->burst_length;
         preview_width = state->preview_width;
         preview_height = state->preview_height;
         device_rotation = state->device_rotation;
         save_dng = state->save_dng;
+        app_mode = state->app_mode;
 
         if (camera) {
                 struct control_state previous_desired = desired_controls;
