@@ -6,13 +6,18 @@
 #include "main.h"
 #include "pipeline.h"
 #include "zbar_pipeline.h"
+#include "av_pipeline.h"
+#include "panfrost_swizzle.h"
 #include <assert.h>
 #include <gtk/gtk.h>
 #include <math.h>
 #include <tiffio.h>
 
 #include "gl_util.h"
+#include <libdrm/drm_fourcc.h>
 #include <sys/mman.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 
 #define TIFFTAG_FORWARDMATRIX1 50964
 
@@ -133,6 +138,7 @@ mp_process_pipeline_start()
         mp_pipeline_invoke(pipeline, setup, NULL, 0);
 
         mp_zbar_pipeline_start();
+        mp_av_pipeline_start();
 }
 
 void
@@ -141,6 +147,7 @@ mp_process_pipeline_stop()
         mp_pipeline_free(pipeline);
 
         mp_zbar_pipeline_stop();
+        mp_av_pipeline_stop();
 }
 
 void
@@ -153,6 +160,13 @@ mp_process_pipeline_sync()
 
 struct _MPProcessPipelineBuffer {
         GLuint texture_id;
+        int fd;
+        int32_t offset;
+        int32_t stride;
+
+        uint32_t *data;
+        size_t size;
+        EGLImage egl_image;
 
         _Atomic(int) refcount;
 };
@@ -207,6 +221,11 @@ repack_image_sequencial(const uint8_t *src_buf,
         }
 }
 
+const uint32_t *mp_process_pipeline_buffer_get_pixels(MPProcessPipelineBuffer *buf)
+{
+        return (uint32_t *)buf->data;
+}
+
 static GLES2Debayer *gles2_debayer = NULL;
 
 static GdkGLContext *context;
@@ -217,6 +236,18 @@ static GdkGLContext *context;
 #include <renderdoc/app.h>
 extern RENDERDOC_API_1_1_2 *rdoc_api;
 #endif
+
+static EGLBoolean (*eglExportDMABUFImageQueryMESA)(EGLDisplay dpy,
+                                                   EGLImage image,
+                                                   int *fourcc,
+                                                   int *num_planes,
+                                                   EGLuint64KHR *modifiers);
+
+static EGLBoolean (*eglExportDMABUFImageMESA)(EGLDisplay dpy,
+                                              EGLImage image,
+                                              int *fds,
+                                              EGLint *strides,
+                                              EGLint *offsets);
 
 static void
 init_gl(MPPipeline *pipeline, GdkSurface **surface)
@@ -249,6 +280,13 @@ init_gl(MPPipeline *pipeline, GdkSurface **surface)
         gdk_gl_context_make_current(context);
         check_gl();
 
+        // Get EGL extensions for DMA
+        EGLContext egl_context = eglGetCurrentContext();
+        assert(egl_context != EGL_NO_CONTEXT);
+
+        eglExportDMABUFImageQueryMESA = (void*) eglGetProcAddress("eglExportDMABUFImageQueryMESA");
+        eglExportDMABUFImageMESA = (void*) eglGetProcAddress("eglExportDMABUFImageMESA");
+
         // Make a VAO for OpenGL
         if (!gdk_gl_context_get_use_es(context)) {
                 GLuint vao;
@@ -257,12 +295,23 @@ init_gl(MPPipeline *pipeline, GdkSurface **surface)
                 check_gl();
         }
 
+        gles2_debayer = gles2_debayer_new(MP_PIXEL_FMT_BGGR8);
+        check_gl();
+
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         check_gl();
 
+        gles2_debayer_use(gles2_debayer);
+
         for (size_t i = 0; i < NUM_BUFFERS; ++i) {
-                glGenTextures(1, &output_buffers[i].texture_id);
-                glBindTexture(GL_TEXTURE_2D, output_buffers[i].texture_id);
+                MPProcessPipelineBuffer *buf = &output_buffers[i];
+                buf->fd = -1;
+                buf->data = MAP_FAILED;
+                buf->egl_image = EGL_NO_IMAGE;
+                buf->size = 0;
+
+                glGenTextures(1, &buf->texture_id);
+                glBindTexture(GL_TEXTURE_2D, buf->texture_id);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         }
@@ -273,10 +322,9 @@ init_gl(MPPipeline *pipeline, GdkSurface **surface)
         int major, minor;
         gdk_gl_context_get_version(context, &major, &minor);
 
-        printf("Initialized %s %d.%d\n",
-               is_es ? "OpenGL ES" : "OpenGL",
-               major,
-               minor);
+        printf("Initialized %s %d.%d\n", is_es ? "OpenGL ES" : "OpenGL", major, minor);
+
+        printf("  extensions: %s\n", eglQueryString(eglGetCurrentDisplay(),  EGL_EXTENSIONS));
 }
 
 void
@@ -314,38 +362,82 @@ process_image_for_preview(const uint8_t *image)
         }
 #endif
 
-        // Copy image to a GL texture. TODO: This can be avoided
-        GLuint input_texture;
-        glGenTextures(1, &input_texture);
-        glBindTexture(GL_TEXTURE_2D, input_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D,
-                     0,
-                     GL_LUMINANCE,
-                     mp_pixel_format_width_to_bytes(camera_mode.pixel_format,
-                                                    camera_mode.width),
-                     camera_mode.height,
-                     0,
-                     GL_LUMINANCE,
-                     GL_UNSIGNED_BYTE,
-                     image);
-        check_gl();
+        GLuint input_texture = 0;
 
-        gles2_debayer_process(
-                gles2_debayer, output_buffer->texture_id, input_texture);
-        check_gl();
+        if (camera_mode.pixel_format == MP_PIXEL_FMT_RGB565) {
+                glBindTexture(GL_TEXTURE_2D, output_buffer->texture_id);
+                glTexImage2D(GL_TEXTURE_2D,
+                             0,
+                             GL_RGB,
+                             camera_mode.width,
+                             camera_mode.height,
+                             0,
+                             GL_RGB,
+                             GL_UNSIGNED_SHORT_5_6_5,
+                             image);
+                check_gl();
+        } else {
+                // Copy image to a GL texture. TODO: This can be avoided
+
+                glGenTextures(1, &input_texture);
+                glBindTexture(GL_TEXTURE_2D, input_texture);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D,
+                             0,
+                             GL_LUMINANCE,
+                             mp_pixel_format_width_to_bytes(camera_mode.pixel_format,
+                                                            camera_mode.width),
+                             camera_mode.height,
+                             0,
+                             GL_LUMINANCE,
+                             GL_UNSIGNED_BYTE,
+                             image);
+                check_gl();
+
+                gles2_debayer_process(
+                        gles2_debayer, output_buffer->texture_id, input_texture);
+                check_gl();
+        }
 
         glFinish();
 
-        glDeleteTextures(1, &input_texture);
+        if (input_texture) {
+                glDeleteTextures(1, &input_texture);
+        }
 
 #ifdef PROFILE_DEBAYER
         clock_t t2 = clock();
         printf("process_image_for_preview %fms\n",
                (float)(t2 - t1) / CLOCKS_PER_SEC * 1000);
+#endif
+
+#ifdef DUMP_PREVIEW
+        // Optionally dump each preview frame to disk for debugging purposes
+        {
+                static int dump_count = 0;
+                char buf[128];
+                snprintf(buf, 128, "preview%d.dump", dump_count);
+                ++dump_count;
+
+                uint32_t *data = malloc(output_buffer->size);
+                panfrost_load_tiled_image(
+                        data,
+                        output_buffer->data,
+                        output_buffer_width,
+                        output_buffer_height,
+                        output_buffer->stride,
+                        output_buffer->stride);
+
+                FILE *f = fopen(buf, "w");
+                fwrite(data, output_buffer->size, 1, f);
+                fclose(f);
+                printf("Dumped %s\n", buf);
+
+                free(data);
+        }
 #endif
 
 #ifdef RENDERDOC
@@ -359,42 +451,36 @@ process_image_for_preview(const uint8_t *image)
 
         // Create a thumbnail from the preview for the last capture
         GdkTexture *thumb = NULL;
-        if (captures_remaining == 1) {
+        if (app_mode == MP_APP_MODE_PICTURE && captures_remaining == 1) {
                 printf("Making thumbnail\n");
 
-                size_t size = output_buffer_width * output_buffer_height *
-                              sizeof(uint32_t);
+                size_t size = output_buffer_height * output_buffer->stride;
 
                 uint32_t *data = g_malloc_n(size, 1);
-
-                glReadPixels(0,
-                             0,
-                             output_buffer_width,
-                             output_buffer_height,
-                             GL_RGBA,
-                             GL_UNSIGNED_BYTE,
-                             data);
-                check_gl();
+                panfrost_load_tiled_image(
+                        data,
+                        output_buffer->data,
+                        output_buffer_width,
+                        output_buffer_height,
+                        output_buffer->stride,
+                        output_buffer->stride);
 
                 // Flip vertically
+                uint32_t swidth = output_buffer->stride / sizeof(uint32_t);
                 for (size_t y = 0; y < output_buffer_height / 2; ++y) {
-                        for (size_t x = 0; x < output_buffer_width; ++x) {
-                                uint32_t tmp = data[(output_buffer_height - y - 1) *
-                                                            output_buffer_width +
-                                                    x];
-                                data[(output_buffer_height - y - 1) *
-                                             output_buffer_width +
-                                     x] = data[y * output_buffer_width + x];
-                                data[y * output_buffer_width + x] = tmp;
+                        for (size_t x = 0; x < swidth; ++x) {
+                                uint32_t tmp = data[(output_buffer_height - y - 1) * swidth + x];
+                                data[(output_buffer_height - y - 1) * swidth + x] = data[y * swidth + x];
+                                data[y * swidth + x] = tmp;
                         }
                 }
 
-                thumb = gdk_memory_texture_new(output_buffer_width,
-                                               output_buffer_height,
-                                               GDK_MEMORY_R8G8B8A8,
-                                               g_bytes_new_take(data, size),
-                                               output_buffer_width *
-                                                       sizeof(uint32_t));
+                thumb = gdk_memory_texture_new(
+                        output_buffer_width,
+                        output_buffer_height,
+                        GDK_MEMORY_R8G8B8A8,
+                        g_bytes_new_take(data, size),
+                        output_buffer->stride);
         }
 
         return thumb;
@@ -679,6 +765,7 @@ process_image(MPPipeline *pipeline, const MPBuffer *buffer)
                       camera_mode.height;
         uint8_t *image = malloc(size);
         memcpy(image, buffer->data, size);
+
         mp_io_pipeline_release_buffer(buffer->index);
 
         MPZBarImage *zbar_image = NULL;
@@ -698,7 +785,7 @@ process_image(MPPipeline *pipeline, const MPBuffer *buffer)
 
         GdkTexture *thumb = process_image_for_preview(image);
 
-        if (captures_remaining > 0) {
+        if (app_mode == MP_APP_MODE_PICTURE && captures_remaining > 0) {
                 int count = burst_length - captures_remaining;
                 --captures_remaining;
 
@@ -716,6 +803,8 @@ process_image(MPPipeline *pipeline, const MPBuffer *buffer)
 
         if (app_mode == MP_APP_MODE_SCAN) {
                 mp_zbar_image_unref(zbar_image);
+        } else if (app_mode == MP_APP_MODE_VIDEO && captures_remaining) {
+                mp_av_pipeline_add_frame(image);
         } else {
                 free(image);
         }
@@ -752,7 +841,7 @@ mp_process_pipeline_process_image(MPBuffer buffer)
 }
 
 static void
-capture()
+start_capture()
 {
         char template[] = "/tmp/megapixels.XXXXXX";
         char *tempdir;
@@ -766,6 +855,65 @@ capture()
         strcpy(burst_dir, tempdir);
 
         captures_remaining = burst_length;
+}
+
+static void
+start_recording()
+{
+        time_t rawtime;
+        time(&rawtime);
+        struct tm tim = *(localtime(&rawtime));
+
+        char fname[37];
+        strftime(fname, 37, "VID%Y%m%d%H%M%S.mkv", &tim);
+
+        if (g_get_user_special_dir(G_USER_DIRECTORY_VIDEOS) != NULL) {
+                sprintf(capture_fname,
+                        "%s/%s",
+                        g_get_user_special_dir(G_USER_DIRECTORY_VIDEOS),
+                        fname);
+        } else if (getenv("XDG_VIDEOS_DIR") != NULL) {
+                sprintf(capture_fname,
+                        "%s/%s",
+                        getenv("XDG_VIDEOS_DIR"),
+                        fname);
+        } else {
+                sprintf(capture_fname,
+                        "%s/Videos/%s",
+                        getenv("HOME"),
+                        fname);
+        }
+
+        uint32_t stride = mp_pixel_format_width_to_bytes(camera_mode.pixel_format, camera_mode.width);
+
+        mp_av_pipeline_record(capture_fname, camera_mode.pixel_format, camera_mode.width, camera_mode.height, stride, camera_mode.frame_interval);
+
+        // Use captures remaining to keep track of whether video is being
+        // recorded
+        captures_remaining = 1;
+}
+
+static void
+stop_recording()
+{
+        mp_av_pipeline_finish();
+        captures_remaining = 0;
+}
+
+static void
+capture()
+{
+        if (app_mode == MP_APP_MODE_PICTURE) {
+                start_capture();
+        } else if (app_mode == MP_APP_MODE_VIDEO) {
+                if (captures_remaining) {
+                        stop_recording();
+                } else {
+                        start_recording();
+                }
+        } else {
+                assert(false);
+        }
 }
 
 void
@@ -788,40 +936,58 @@ on_output_changed(bool format_changed)
                 output_buffer_height = tmp;
         }
 
+        EGLContext context = eglGetCurrentContext();
+        assert(context != EGL_NO_CONTEXT);
+
+        EGLDisplay display = eglGetCurrentDisplay();
+        assert(display != EGL_NO_DISPLAY);
+
         for (size_t i = 0; i < NUM_BUFFERS; ++i) {
-                glBindTexture(GL_TEXTURE_2D, output_buffers[i].texture_id);
-                glTexImage2D(GL_TEXTURE_2D,
-                             0,
-                             GL_RGBA,
-                             output_buffer_width,
-                             output_buffer_height,
-                             0,
-                             GL_RGBA,
-                             GL_UNSIGNED_BYTE,
-                             NULL);
+                MPProcessPipelineBuffer *buf = &output_buffers[i];
+
+                if (buf->data != MAP_FAILED) {
+                        munmap(buf->data, buf->size);
+                }
+
+                if (buf->fd != -1) {
+                        close(buf->fd);
+                }
+
+                if (buf->egl_image != EGL_NO_IMAGE) {
+                        eglDestroyImage(display, buf->egl_image);
+                }
+
+                glBindTexture(GL_TEXTURE_2D, buf->texture_id);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, output_buffer_width, output_buffer_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+                buf->egl_image = eglCreateImage(display, context, EGL_GL_TEXTURE_2D, (EGLClientBuffer) (size_t) buf->texture_id, NULL);
+                assert(buf->egl_image != EGL_NO_IMAGE);
+
+                int fourcc;
+                int num_planes;
+                EGLuint64KHR modifiers;
+                EGLBoolean succeeded = eglExportDMABUFImageQueryMESA(display, buf->egl_image, &fourcc, &num_planes, &modifiers);
+                assert(succeeded);
+                assert(fourcc == DRM_FORMAT_ABGR8888);
+                assert(num_planes == 1);
+
+                succeeded = eglExportDMABUFImageMESA(display, buf->egl_image, &buf->fd, &buf->stride, &buf->offset);
+                assert(succeeded);
+                assert(buf->offset == 0);
+                assert((buf->stride / 4) % 16 == 0);
+
+                buf->size = output_buffer_height * buf->stride + buf->offset;
+                buf->data = mmap(0, buf->size, PROT_READ, MAP_SHARED, buf->fd, 0);
+                assert(buf->data != MAP_FAILED);
         }
 
         glBindTexture(GL_TEXTURE_2D, 0);
 
-        // Create new gles2_debayer on format change
-        if (format_changed) {
-                if (gles2_debayer)
-                        gles2_debayer_free(gles2_debayer);
-
-                gles2_debayer = gles2_debayer_new(camera_mode.pixel_format);
-                check_gl();
-
-                gles2_debayer_use(gles2_debayer);
-        }
-
         gles2_debayer_configure(
                 gles2_debayer,
-                output_buffer_width,
-                output_buffer_height,
-                camera_mode.width,
-                camera_mode.height,
-                camera->rotate,
-                camera->mirrored,
+                output_buffer_width, output_buffer_height,
+                camera_mode.width, camera_mode.height,
+                camera->rotate, camera->mirrored,
                 camera->previewmatrix[0] == 0 ? NULL : camera->previewmatrix,
                 camera->blacklevel);
 }

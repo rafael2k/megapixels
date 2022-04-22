@@ -17,6 +17,7 @@ typedef enum {
         MP_PIXEL_FMT_RGGB10P,
         MP_PIXEL_FMT_UYVY,
         MP_PIXEL_FMT_YUYV,
+        MP_PIXEL_FMT_RGB565,
 
         MP_PIXEL_FMT_MAX,
 } MPPixelFormat;

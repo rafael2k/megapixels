@@ -154,6 +154,10 @@ config_ini_handler(void *user,
                             "capture-", &cc->capture_mode, name, value)) {
                 } else if (config_handle_camera_mode(
                                    "preview-", &cc->preview_mode, name, value)) {
+                } else if (config_handle_camera_mode(
+                        "video-", &cc->video_mode, name, value)) {
+                } else if (config_handle_camera_mode(
+                        "scan-", &cc->scan_mode, name, value)) {
                 } else if (strcmp(name, "rotate") == 0) {
                         cc->rotate = strtoint(value, NULL, 10);
                 } else if (strcmp(name, "mirrored") == 0) {
@@ -240,15 +244,25 @@ config_ini_handler(void *user,
 }
 
 void
-calculate_matrices()
+after_parse()
 {
-        for (size_t i = 0; i < MP_MAX_CAMERAS; ++i) {
+        for (size_t i = 0; i < num_cameras; ++i) {
+                // Calculate matrices
                 if (cameras[i].colormatrix != NULL &&
                     cameras[i].forwardmatrix != NULL) {
                         multiply_matrices(cameras[i].colormatrix,
                                           cameras[i].forwardmatrix,
                                           cameras[i].previewmatrix);
                 }
+
+                // Implicit camera modes
+                assert(cameras[i].capture_mode.width != 0);
+                if (cameras[i].preview_mode.width == 0)
+                        cameras[i].preview_mode = cameras[i].capture_mode;
+                if (cameras[i].video_mode.width == 0)
+                        cameras[i].video_mode = cameras[i].preview_mode;
+                if (cameras[i].scan_mode.width == 0)
+                        cameras[i].scan_mode = cameras[i].capture_mode;
         }
 }
 
@@ -275,7 +289,7 @@ mp_load_config()
                 return false;
         }
 
-        calculate_matrices();
+        after_parse();
 
         return true;
 }

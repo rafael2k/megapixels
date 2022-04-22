@@ -14,7 +14,7 @@
 
 static const char *pixel_format_names[MP_PIXEL_FMT_MAX] = {
         "unsupported", "BGGR8",   "GBRG8",   "GRBG8", "RGGB8", "BGGR10P",
-        "GBRG10P",     "GRBG10P", "RGGB10P", "UYVY",  "YUYV",
+        "GBRG10P",     "GRBG10P", "RGGB10P", "UYVY",  "YUYV", "RGB565",
 };
 
 const char *
@@ -47,6 +47,7 @@ static const uint32_t pixel_format_v4l_pixel_formats[MP_PIXEL_FMT_MAX] = {
         V4L2_PIX_FMT_SRGGB10P,
         V4L2_PIX_FMT_UYVY,
         V4L2_PIX_FMT_YUYV,
+        V4L2_PIX_FMT_RGB565,
 };
 
 uint32_t
@@ -79,6 +80,7 @@ static const uint32_t pixel_format_v4l_bus_codes[MP_PIXEL_FMT_MAX] = {
         MEDIA_BUS_FMT_SRGGB10_1X10,
         MEDIA_BUS_FMT_UYVY8_2X8,
         MEDIA_BUS_FMT_YUYV8_2X8,
+        MEDIA_BUS_FMT_RGB565_2X8_LE,
 };
 
 uint32_t
@@ -116,6 +118,8 @@ mp_pixel_format_bits_per_pixel(MPPixelFormat pixel_format)
                 return 10;
         case MP_PIXEL_FMT_UYVY:
         case MP_PIXEL_FMT_YUYV:
+                return 16;
+        case MP_PIXEL_FMT_RGB565:
                 return 16;
         default:
                 return 0;
@@ -232,6 +236,7 @@ mp_pixel_format_width_to_colors(MPPixelFormat pixel_format, uint32_t width)
                 return width / 2 * 5;
         case MP_PIXEL_FMT_UYVY:
         case MP_PIXEL_FMT_YUYV:
+        case MP_PIXEL_FMT_RGB565:
                 return width;
         default:
                 return 0;
@@ -254,6 +259,7 @@ mp_pixel_format_height_to_colors(MPPixelFormat pixel_format, uint32_t height)
                 return height / 2;
         case MP_PIXEL_FMT_UYVY:
         case MP_PIXEL_FMT_YUYV:
+        case MP_PIXEL_FMT_RGB565:
                 return height;
         default:
                 return 0;

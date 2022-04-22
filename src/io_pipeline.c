@@ -344,33 +344,33 @@ mp_io_pipeline_focus()
 static void
 capture(MPPipeline *pipeline, const void *data)
 {
-        assert(app_mode == MP_APP_MODE_PICTURE);
-
         struct camera_info *info = &cameras[camera->index];
 
-        captures_remaining = burst_length;
+        if (app_mode == MP_APP_MODE_PICTURE) {
+                captures_remaining = burst_length;
 
-        // Disable the autogain/exposure while taking the burst
-        mp_camera_control_set_int32(info->camera, V4L2_CID_AUTOGAIN, 0);
-        mp_camera_control_set_int32(
-                info->camera, V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL);
+                // Disable the autogain/exposure while taking the burst
+                mp_camera_control_set_int32(info->camera, V4L2_CID_AUTOGAIN, 0);
+                mp_camera_control_set_int32(
+                        info->camera, V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL);
 
-        // Change camera mode for capturing
-        mp_process_pipeline_sync();
-        mp_camera_stop_capture(info->camera);
+                // Change camera mode for capturing
+                mp_process_pipeline_sync();
+                mp_camera_stop_capture(info->camera);
 
-        camera_mode = camera->capture_mode;
-        mp_camera_set_mode(info->camera, &camera_mode);
-        just_switched_mode = true;
+                camera_mode = camera->capture_mode;
+                mp_camera_set_mode(info->camera, &camera_mode);
+                just_switched_mode = true;
 
-        mp_camera_start_capture(info->camera);
+                mp_camera_start_capture(info->camera);
 
-        // Enable flash
-        if (info->flash && flash_enabled) {
-                mp_flash_enable(info->flash);
+                // Enable flash
+                if (info->flash && flash_enabled) {
+                        mp_flash_enable(info->flash);
+                }
+
+                update_process_pipeline();
         }
-
-        update_process_pipeline();
 
         mp_process_pipeline_capture();
 }
@@ -537,12 +537,37 @@ on_frame(MPBuffer buffer, void *_data)
         }
 }
 
+static MPCameraMode derive_camera_mode()
+{
+        switch (app_mode)
+        {
+        case MP_APP_MODE_PICTURE:
+                return camera->preview_mode;
+        case MP_APP_MODE_VIDEO:
+                return camera->video_mode;
+        case MP_APP_MODE_SCAN:
+                return camera->scan_mode;
+        }
+        assert(false);
+}
+
 static void
 update_state(MPPipeline *pipeline, const struct mp_io_pipeline_state *state)
 {
         // Make sure the state isn't updated more than it needs to be by checking
         // whether this state change actually changes anything.
-        bool has_changed = false;
+        bool has_changed = burst_length != state->burst_length ||
+                      preview_width != state->preview_width ||
+                      preview_height != state->preview_height ||
+                      device_rotation != state->device_rotation ||
+                      app_mode != state->app_mode;
+
+        burst_length = state->burst_length;
+        preview_width = state->preview_width;
+        preview_height = state->preview_height;
+        device_rotation = state->device_rotation;
+        save_dng = state->save_dng;
+        app_mode = state->app_mode;
 
         if (camera != state->camera) {
                 has_changed = true;
@@ -575,7 +600,7 @@ update_state(MPPipeline *pipeline, const struct mp_io_pipeline_state *state)
                                              dev_info->interface_pad_id,
                                              true);
 
-                        camera_mode = camera->preview_mode;
+                        camera_mode = derive_camera_mode();
                         mp_camera_set_mode(info->camera, &camera_mode);
 
                         mp_camera_start_capture(info->camera);
@@ -595,20 +620,23 @@ update_state(MPPipeline *pipeline, const struct mp_io_pipeline_state *state)
                         current_controls.exposure = mp_camera_control_get_int32(
                                 info->camera, V4L2_CID_EXPOSURE);
                 }
+        } else if (camera) {
+                MPCameraMode new_camera_mode = derive_camera_mode();
+
+                if (!mp_camera_mode_is_equivalent(&new_camera_mode, &camera_mode)) {
+                        camera_mode = new_camera_mode;
+
+                        struct camera_info *info = &cameras[camera->index];
+
+                        mp_camera_stop_capture(info->camera);
+
+                        mp_camera_set_mode(info->camera, &camera_mode);
+
+                        mp_camera_start_capture(info->camera);
+                        capture_source = mp_pipeline_add_capture_source(
+                                        pipeline, info->camera, on_frame, NULL);
+                }
         }
-
-        has_changed = has_changed || burst_length != state->burst_length ||
-                      preview_width != state->preview_width ||
-                      preview_height != state->preview_height ||
-                      device_rotation != state->device_rotation ||
-                      app_mode != state->app_mode;
-
-        burst_length = state->burst_length;
-        preview_width = state->preview_width;
-        preview_height = state->preview_height;
-        device_rotation = state->device_rotation;
-        save_dng = state->save_dng;
-        app_mode = state->app_mode;
 
         if (camera) {
                 struct control_state previous_desired = desired_controls;

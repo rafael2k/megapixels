@@ -30,6 +30,8 @@ struct mp_camera_config {
 
         MPCameraMode capture_mode;
         MPCameraMode preview_mode;
+        MPCameraMode video_mode;
+        MPCameraMode scan_mode;
         int rotate;
         bool mirrored;
 

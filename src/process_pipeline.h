@@ -45,3 +45,4 @@ typedef struct _MPProcessPipelineBuffer MPProcessPipelineBuffer;
 void mp_process_pipeline_buffer_ref(MPProcessPipelineBuffer *buf);
 void mp_process_pipeline_buffer_unref(MPProcessPipelineBuffer *buf);
 uint32_t mp_process_pipeline_buffer_get_texture_id(MPProcessPipelineBuffer *buf);
+const uint32_t *mp_process_pipeline_buffer_get_pixels(MPProcessPipelineBuffer *buf);

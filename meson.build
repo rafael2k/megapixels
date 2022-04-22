@@ -5,8 +5,10 @@ gtkdep = dependency('gtk4')
 tiff = dependency('libtiff-4')
 zbar = dependency('zbar')
 threads = dependency('threads')
-# gl = dependency('gl')
-epoxy      = dependency('epoxy')
+egl = dependency('egl')
+epoxy = dependency('epoxy')
+gst = dependency('gstreamer-1.0')
+gst_video = dependency('gstreamer-video-1.0')
 
 cc = meson.get_compiler('c')
 libm = cc.find_library('m', required: false)
@@ -34,6 +36,7 @@ if get_option('tiffcfapattern')
 endif
 
 executable('megapixels',
+  'src/av_pipeline.c',
   'src/camera.c',
   'src/camera_config.c',
   'src/device.c',
@@ -44,12 +47,13 @@ executable('megapixels',
   'src/io_pipeline.c',
   'src/main.c',
   'src/matrix.c',
+  'src/panfrost_swizzle.c',
   'src/pipeline.c',
   'src/process_pipeline.c',
   'src/zbar_pipeline.c',
   resources,
   include_directories: 'src/',
-  dependencies: [gtkdep, libm, tiff, zbar, threads, epoxy],
+  dependencies: [gtkdep, libm, tiff, zbar, threads, epoxy, egl, gst, gst_video],
   install: true,
   link_args: '-Wl,-ldl')
 
