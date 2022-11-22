@@ -1,6 +1,7 @@
 #include "camera_config.h"
 
 #include "config.h"
+#include "device.h"
 #include "ini.h"
 #include "matrix.h"
 #include <assert.h>
@@ -10,11 +11,9 @@
 #include <string.h>
 #include <unistd.h>
 
-static struct mp_camera_config cameras[MP_MAX_CAMERAS];
-static size_t num_cameras = 0;
-
 static char *exif_make;
 static char *exif_model;
+static MPDeviceList *current;
 
 static bool
 find_config(char *conffile)
@@ -128,27 +127,18 @@ config_ini_handler(void *user,
                         exit(1);
                 }
         } else {
-                if (num_cameras == MP_MAX_CAMERAS) {
-                        g_printerr("More cameras defined than NUM_CAMERAS\n");
-                        exit(1);
+                if (current == NULL ||
+                    strcmp(current->device->cfg_name, section) != 0) {
+                        MPDevice *device = calloc(1, sizeof(MPDevice));
+                        snprintf(device->cfg_name, 100, "%s", section);
+
+                        MPDeviceList *next = malloc(sizeof(MPDeviceList));
+                        next->device = device;
+                        next->next = current;
+                        current = next;
                 }
 
-                size_t index = 0;
-                for (; index < num_cameras; ++index) {
-                        if (strcmp(cameras[index].cfg_name, section) == 0) {
-                                break;
-                        }
-                }
-
-                if (index == num_cameras) {
-                        printf("Adding camera %s from config\n", section);
-                        ++num_cameras;
-
-                        cameras[index].index = index;
-                        strcpy(cameras[index].cfg_name, section);
-                }
-
-                struct mp_camera_config *cc = &cameras[index];
+                MPDevice *cc = current->device;
 
                 if (config_handle_camera_mode(
                             "capture-", &cc->capture_mode, name, value)) {
@@ -159,10 +149,12 @@ config_ini_handler(void *user,
                 } else if (strcmp(name, "mirrored") == 0) {
                         cc->mirrored = strcmp(value, "true") == 0;
                 } else if (strcmp(name, "driver") == 0) {
-                        strcpy(cc->dev_name, value);
+                        strcpy(cc->cfg_driver_name, value);
                 } else if (strcmp(name, "media-driver") == 0) {
-                        strcpy(cc->media_dev_name, value);
+                        strcpy(cc->cfg_media_driver_name, value);
                 } else if (strcmp(name, "media-links") == 0) {
+                        MPDeviceLinkList *link_current = NULL;
+
                         char **linkdefs = g_strsplit(value, ",", 0);
 
                         for (int i = 0; i < MP_MAX_LINKS && linkdefs[i] != NULL;
@@ -171,76 +163,25 @@ config_ini_handler(void *user,
                                 char **porta = g_strsplit(linkdef[0], ":", 2);
                                 char **portb = g_strsplit(linkdef[1], ":", 2);
 
-                                strcpy(cc->media_links[i].source_name, porta[0]);
-                                strcpy(cc->media_links[i].target_name, portb[0]);
-                                cc->media_links[i].source_port =
-                                        strtoint(porta[1], NULL, 10);
-                                cc->media_links[i].target_port =
-                                        strtoint(portb[1], NULL, 10);
+                                MPDeviceLink *link = calloc(1, sizeof(MPDeviceLink));
+                                MPDeviceLinkList *next_link =
+                                        malloc(sizeof(MPDeviceLinkList));
+                                next_link->link = link;
+                                next_link->next = link_current;
+                                link_current = next_link;
+
+                                strcpy(link->source_name, porta[0]);
+                                strcpy(link->target_name, portb[0]);
+                                link->source_port = strtoint(porta[1], NULL, 10);
+                                link->target_port = strtoint(portb[1], NULL, 10);
 
                                 g_strfreev(portb);
                                 g_strfreev(porta);
                                 g_strfreev(linkdef);
-                                ++cc->num_media_links;
                         }
                         g_strfreev(linkdefs);
-                } else if (strcmp(name, "media-formats") == 0) {
-                        struct mp_camera_config *cc = &cameras[index];
-                        char **formatdefs = g_strsplit(value, ",", 0);
+                        cc->media_links = link_current;
 
-                        for (int i = 0; i < MP_MAX_FORMATS && formatdefs[i] != NULL;
-                             ++i) {
-                                char **entry = g_strsplit(formatdefs[i], ":", 5);
-                                char *name = entry[0];
-                                int pad = strtoint(entry[1], NULL, 10);
-                                char *format = entry[2];
-                                char *width = entry[3];
-                                char *height = entry[4];
-
-                                const size_t name_size =
-                                        sizeof(cc->media_formats[i].name);
-                                strncpy(cc->media_formats[i].name, name, name_size);
-
-                                cc->media_formats[i].pad = pad;
-
-                                cc->media_formats[i].mode.pixel_format =
-                                        mp_pixel_format_from_str(format);
-                                cc->media_formats[i].mode.width =
-                                        strtoint(width, NULL, 10);
-                                cc->media_formats[i].mode.height =
-                                        strtoint(height, NULL, 10);
-
-                                cc->num_media_formats++;
-
-                                g_strfreev(entry);
-                        }
-                } else if (strcmp(name, "media-crops") == 0) {
-                        char **formatdefs = g_strsplit(value, ",", 0);
-
-                        for (int i = 0; i < MP_MAX_CROPS && formatdefs[i] != NULL;
-                             ++i) {
-                                char **entry = g_strsplit(formatdefs[i], ":", 6);
-                                char *name = entry[0];
-                                int pad = strtoint(entry[1], NULL, 10);
-                                int top = strtoint(entry[2], NULL, 10);
-                                int left = strtoint(entry[3], NULL, 10);
-                                int width = strtoint(entry[4], NULL, 10);
-                                int height = strtoint(entry[5], NULL, 10);
-
-                                const size_t name_size =
-                                        sizeof(cc->media_crops[i].name);
-                                strncpy(cc->media_crops[i].name, name, name_size);
-
-                                cc->media_crops[i].pad = pad;
-                                cc->media_crops[i].top = top;
-                                cc->media_crops[i].left = left;
-                                cc->media_crops[i].width = width;
-                                cc->media_crops[i].height = height;
-
-                                cc->num_media_crops++;
-
-                                g_strfreev(entry);
-                        }
                 } else if (strcmp(name, "colormatrix") == 0) {
                         sscanf(value,
                                "%f,%f,%f,%f,%f,%f,%f,%f,%f",
@@ -276,11 +217,11 @@ config_ini_handler(void *user,
                 } else if (strcmp(name, "fnumber") == 0) {
                         cc->fnumber = strtod(value, NULL);
                 } else if (strcmp(name, "iso-min") == 0) {
-                        cc->iso_min = strtod(value, NULL);
+                        cc->iso_min = strtoint(value, NULL, 10);
                 } else if (strcmp(name, "iso-max") == 0) {
-                        cc->iso_max = strtod(value, NULL);
+                        cc->iso_max = strtoint(value, NULL, 10);
                 } else if (strcmp(name, "flash-path") == 0) {
-                        strcpy(cc->flash_path, value);
+                        strcpy(cc->cfg_flash_path, value);
                         cc->has_flash = true;
                 } else if (strcmp(name, "flash-display") == 0) {
                         cc->flash_display = strcmp(value, "true") == 0;
@@ -297,44 +238,48 @@ config_ini_handler(void *user,
 }
 
 void
-calculate_matrices()
+calculate_matrices(MPDeviceList *list)
 {
-        for (size_t i = 0; i < MP_MAX_CAMERAS; ++i) {
-                if (cameras[i].colormatrix != NULL &&
-                    cameras[i].forwardmatrix != NULL) {
-                        multiply_matrices(cameras[i].colormatrix,
-                                          cameras[i].forwardmatrix,
-                                          cameras[i].previewmatrix);
+        while (list) {
+                MPDevice *device = mp_device_list_get(list);
+                if (device->colormatrix[0] != 0.0f &&
+                    device->forwardmatrix[0] != 0.0f) {
+                        multiply_matrices(device->colormatrix,
+                                          device->forwardmatrix,
+                                          device->previewmatrix);
                 }
+                list = list->next;
         }
 }
 
-bool
+MPDeviceList *
 mp_load_config()
 {
+        current = NULL;
+
         char file[512];
         if (!find_config(file)) {
                 g_printerr("Could not find any config file\n");
-                return false;
+                return NULL;
         }
 
         int result = ini_parse(file, config_ini_handler, NULL);
         if (result == -1) {
                 g_printerr("Config file not found\n");
-                return false;
+                return NULL;
         }
         if (result == -2) {
                 g_printerr("Could not allocate memory to parse config file\n");
-                return false;
+                return NULL;
         }
         if (result != 0) {
                 g_printerr("Could not parse config file\n");
-                return false;
+                return NULL;
         }
 
-        calculate_matrices();
+        calculate_matrices(current);
 
-        return true;
+        return current;
 }
 
 const char *
@@ -347,13 +292,4 @@ const char *
 mp_get_device_model()
 {
         return exif_model;
-}
-
-const struct mp_camera_config *
-mp_get_camera_config(size_t index)
-{
-        if (index >= num_cameras)
-                return NULL;
-
-        return &cameras[index];
 }

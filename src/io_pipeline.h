@@ -3,7 +3,7 @@
 #include "camera_config.h"
 
 struct mp_io_pipeline_state {
-        const struct mp_camera_config *camera;
+        const MPDevice *device;
 
         int burst_length;
 
@@ -21,7 +21,7 @@ struct mp_io_pipeline_state {
         bool flash_enabled;
 };
 
-void mp_io_pipeline_start();
+void mp_io_pipeline_start(MPDeviceList **devices);
 void mp_io_pipeline_stop();
 
 void mp_io_pipeline_focus();

@@ -6,7 +6,7 @@
 #include "zbar_pipeline.h"
 
 struct mp_main_state {
-        const struct mp_camera_config *camera;
+        MPDevice *device;
         MPMode mode;
 
         int image_width;

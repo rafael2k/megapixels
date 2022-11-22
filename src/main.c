@@ -1,6 +1,7 @@
 #include "main.h"
 
 #include "camera_config.h"
+#include "device.h"
 #include "flash.h"
 #include "gl_util.h"
 #include "io_pipeline.h"
@@ -48,7 +49,8 @@ RENDERDOC_API_1_1_2 *rdoc_api = NULL;
 enum user_control { USER_CONTROL_ISO, USER_CONTROL_SHUTTER };
 
 static bool camera_is_initialized = false;
-static const struct mp_camera_config *camera = NULL;
+static MPDeviceList *devices = NULL;
+static MPDeviceList *device = NULL;
 static MPMode mode;
 
 static int preview_width = -1;
@@ -114,7 +116,7 @@ static void
 update_io_pipeline()
 {
         struct mp_io_pipeline_state io_state = {
-                .camera = camera,
+                .device = device->device,
                 .burst_length = burst_length,
                 .preview_width = preview_width,
                 .preview_height = preview_height,
@@ -128,7 +130,7 @@ update_io_pipeline()
         mp_io_pipeline_update_state(&io_state);
 
         // Make the right settings available for the camera
-        gtk_widget_set_visible(flash_button, camera->has_flash);
+        gtk_widget_set_visible(flash_button, device->device->has_flash);
 }
 
 static bool
@@ -138,7 +140,7 @@ update_state(const struct mp_main_state *state)
                 camera_is_initialized = true;
         }
 
-        if (camera == state->camera) {
+        if (device->device == state->device) {
                 mode = state->mode;
 
                 if (!gain_is_manual) {
@@ -693,16 +695,11 @@ preview_pressed(GtkGestureClick *gesture, int n_press, double x, double y)
 static void
 run_camera_switch_action(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
-        size_t next_index = camera->index + 1;
-        const struct mp_camera_config *next_camera =
-                mp_get_camera_config(next_index);
-
-        if (!next_camera) {
-                next_index = 0;
-                next_camera = mp_get_camera_config(next_index);
+        if (device->next != NULL) {
+                device = device->next;
+        } else {
+                device = devices;
         }
-
-        camera = next_camera;
         update_io_pipeline();
 }
 
@@ -828,7 +825,7 @@ open_iso_controls(GtkWidget *button, gpointer user_data)
 static void
 set_shutter(double value)
 {
-        int new_exposure = (int)(value / 360.0 * camera->capture_mode.height);
+        int new_exposure = (int)(value / 360.0 * device->device->capture_mode.height);
         if (new_exposure != exposure) {
                 exposure = new_exposure;
                 update_io_pipeline();
@@ -874,7 +871,8 @@ on_realize(GtkWidget *window, gpointer *data)
         GtkNative *native = gtk_widget_get_native(window);
         mp_process_pipeline_init_gl(gtk_native_get_surface(native));
 
-        camera = mp_get_camera_config(0);
+        // Get the first camera by default
+        device = devices;
         update_io_pipeline();
 }
 
@@ -1290,7 +1288,7 @@ activate(GtkApplication *app, gpointer data)
                 g_application_get_dbus_connection(G_APPLICATION(app));
         mp_flash_gtk_init(conn);
 
-        mp_io_pipeline_start();
+        mp_io_pipeline_start(&devices);
 
         gtk_application_add_window(app, GTK_WINDOW(window));
         gtk_widget_show(window);
@@ -1339,10 +1337,10 @@ main(int argc, char *argv[])
         }
 #endif
 
-        if (!mp_load_config())
-                return 1;
-
         setenv("LC_NUMERIC", "C", 1);
+
+        // Load config
+        devices = mp_load_config();
 
         GtkApplication *app = gtk_application_new(APP_ID, 0);
 

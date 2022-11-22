@@ -78,22 +78,35 @@ install_data(
   install_dir: get_option('datadir') / 'megapixels/config/')
 
 # Tools
-executable('megapixels-list-devices',
-  'tools/list_devices.c',
+#executable('megapixels-list-devices',
+#  'tools/list_devices.c',
+#  'src/device.c',
+#  'src/mode.c',
+#  include_directories: 'src/',
+#  dependencies: [gtkdep],
+#  install: true)
+
+#executable('megapixels-camera-test',
+#  'tools/camera_test.c',
+#  'src/camera.c',
+#  'src/device.c',
+#  'src/mode.c',
+#  include_directories: 'src/',
+#  dependencies: [gtkdep],
+#  install: true)
+
+executable('megapixels-config-test',
+  'tools/config_test.c',
+  'src/camera.c',
   'src/device.c',
   'src/mode.c',
+  'src/ini.c',
+  'src/matrix.c',
+  'src/camera_config.c',
   include_directories: 'src/',
   dependencies: [gtkdep],
   install: true)
 
-executable('megapixels-camera-test',
-  'tools/camera_test.c',
-  'src/camera.c',
-  'src/device.c',
-  'src/mode.c',
-  include_directories: 'src/',
-  dependencies: [gtkdep],
-  install: true)
 
 # Formatting
 clang_format = find_program('clang-format-14', required: false)

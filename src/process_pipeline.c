@@ -26,8 +26,7 @@ static char burst_dir[23];
 static volatile bool is_capturing = false;
 static volatile int frames_processed = 0;
 static volatile int frames_received = 0;
-
-static const struct mp_camera_config *camera;
+static MPDevice *pdevice;
 static int camera_rotation;
 
 static MPMode mode;
@@ -502,16 +501,16 @@ process_image_for_capture(const uint8_t *image, int count)
         TIFFSetField(tif, TIFFTAG_MODEL, mp_get_device_model());
         uint16_t orientation;
         if (camera_rotation == 0) {
-                orientation = camera->mirrored ? ORIENTATION_TOPRIGHT :
+                orientation = pdevice->mirrored ? ORIENTATION_TOPRIGHT :
                                                  ORIENTATION_TOPLEFT;
         } else if (camera_rotation == 90) {
-                orientation = camera->mirrored ? ORIENTATION_RIGHTBOT :
+                orientation = pdevice->mirrored ? ORIENTATION_RIGHTBOT :
                                                  ORIENTATION_LEFTBOT;
         } else if (camera_rotation == 180) {
-                orientation = camera->mirrored ? ORIENTATION_BOTLEFT :
+                orientation = pdevice->mirrored ? ORIENTATION_BOTLEFT :
                                                  ORIENTATION_BOTRIGHT;
         } else {
-                orientation = camera->mirrored ? ORIENTATION_LEFTTOP :
+                orientation = pdevice->mirrored ? ORIENTATION_LEFTTOP :
                                                  ORIENTATION_RIGHTTOP;
         }
         TIFFSetField(tif, TIFFTAG_ORIENTATION, orientation);
@@ -529,13 +528,13 @@ process_image_for_capture(const uint8_t *image, int count)
                 mp_get_device_make(),
                 mp_get_device_model());
         TIFFSetField(tif, TIFFTAG_UNIQUECAMERAMODEL, uniquecameramodel);
-        if (camera->colormatrix[0]) {
-                TIFFSetField(tif, TIFFTAG_COLORMATRIX1, 9, camera->colormatrix);
+        if (pdevice->colormatrix[0]) {
+                TIFFSetField(tif, TIFFTAG_COLORMATRIX1, 9, pdevice->colormatrix);
         } else {
                 TIFFSetField(tif, TIFFTAG_COLORMATRIX1, 9, colormatrix_srgb);
         }
-        if (camera->forwardmatrix[0]) {
-                TIFFSetField(tif, TIFFTAG_FORWARDMATRIX1, 9, camera->forwardmatrix);
+        if (pdevice->forwardmatrix[0]) {
+                TIFFSetField(tif, TIFFTAG_FORWARDMATRIX1, 9, pdevice->forwardmatrix);
         }
         static const float neutral[] = { 1.0, 1.0, 1.0 };
         TIFFSetField(tif, TIFFTAG_ASSHOTNEUTRAL, 3, neutral);
@@ -574,14 +573,14 @@ process_image_for_capture(const uint8_t *image, int count)
                      mp_pixel_format_cfa_pattern(mode.pixel_format));
 #endif
         printf("TIFF version %d\n", TIFFLIB_VERSION);
-        int whitelevel = camera->whitelevel;
+        int whitelevel = pdevice->whitelevel;
         if (!whitelevel) {
                 whitelevel =
                         (1 << mp_pixel_format_pixel_depth(mode.pixel_format)) - 1;
         }
         TIFFSetField(tif, TIFFTAG_WHITELEVEL, 1, &whitelevel);
-        if (camera->blacklevel) {
-                const float blacklevel = camera->blacklevel;
+        if (pdevice->blacklevel) {
+                const float blacklevel = pdevice->blacklevel;
                 TIFFSetField(tif, TIFFTAG_BLACKLEVEL, 1, &blacklevel);
         }
         TIFFCheckpointDirectory(tif);
@@ -626,12 +625,12 @@ process_image_for_capture(const uint8_t *image, int count)
                      (mode.frame_interval.numerator /
                       (float)mode.frame_interval.denominator) /
                              ((float)mode.height / (float)exposure));
-        if (camera->iso_min && camera->iso_max) {
+        if (pdevice->iso_min && pdevice->iso_max) {
                 uint16_t isospeed = remap(
-                        gain - 1, 0, gain_max, camera->iso_min, camera->iso_max);
+                        gain - 1, 0, gain_max, pdevice->iso_min, pdevice->iso_max);
                 TIFFSetField(tif, EXIFTAG_ISOSPEEDRATINGS, 1, &isospeed);
         }
-        if (!camera->has_flash) {
+        if (!pdevice->has_flash) {
                 // No flash function
                 TIFFSetField(tif, EXIFTAG_FLASH, 0x20);
         } else if (flash_enabled) {
@@ -644,16 +643,16 @@ process_image_for_capture(const uint8_t *image, int count)
 
         TIFFSetField(tif, EXIFTAG_DATETIMEORIGINAL, datetime);
         TIFFSetField(tif, EXIFTAG_DATETIMEDIGITIZED, datetime);
-        if (camera->fnumber) {
-                TIFFSetField(tif, EXIFTAG_FNUMBER, camera->fnumber);
+        if (pdevice->fnumber) {
+                TIFFSetField(tif, EXIFTAG_FNUMBER, pdevice->fnumber);
         }
-        if (camera->focallength) {
-                TIFFSetField(tif, EXIFTAG_FOCALLENGTH, camera->focallength);
+        if (pdevice->focallength) {
+                TIFFSetField(tif, EXIFTAG_FOCALLENGTH, pdevice->focallength);
         }
-        if (camera->focallength && camera->cropfactor) {
+        if (pdevice->focallength && pdevice->cropfactor) {
                 TIFFSetField(tif,
                              EXIFTAG_FOCALLENGTHIN35MMFILM,
-                             (short)(camera->focallength * camera->cropfactor));
+                             (short)(pdevice->focallength * pdevice->cropfactor));
         }
         uint64_t exif_offset = 0;
         TIFFWriteCustomDirectory(tif, &exif_offset);
@@ -769,7 +768,7 @@ process_image(MPPipeline *pipeline, const MPBuffer *buffer)
                                                     mode.width,
                                                     mode.height,
                                                     camera_rotation,
-                                                    camera->mirrored);
+                                                    pdevice->mirrored);
         mp_zbar_pipeline_process_image(mp_zbar_image_ref(zbar_image));
 
 #ifdef PROFILE_PROCESS
@@ -858,7 +857,7 @@ on_output_changed(bool format_changed)
         output_buffer_width = mode.width / 2;
         output_buffer_height = mode.height / 2;
 
-        if (camera->rotate != 0 || camera->rotate != 180) {
+        if (pdevice->rotate != 0 || pdevice->rotate != 180) {
                 int tmp = output_buffer_width;
                 output_buffer_width = output_buffer_height;
                 output_buffer_height = tmp;
@@ -896,10 +895,10 @@ on_output_changed(bool format_changed)
                 output_buffer_height,
                 mode.width,
                 mode.height,
-                camera->rotate,
-                camera->mirrored,
-                camera->previewmatrix[0] == 0 ? NULL : camera->previewmatrix,
-                camera->blacklevel);
+                pdevice->rotate,
+                pdevice->mirrored,
+                pdevice->previewmatrix[0] == 0 ? NULL : pdevice->previewmatrix,
+                pdevice->blacklevel);
 }
 
 static int
@@ -919,7 +918,7 @@ update_state(MPPipeline *pipeline, const struct mp_process_pipeline_state *state
 
         const bool format_changed = mode.pixel_format != state->mode.pixel_format;
 
-        camera = state->camera;
+        pdevice = state->device;
         mode = state->mode;
 
         preview_width = state->preview_width;
@@ -937,13 +936,13 @@ update_state(MPPipeline *pipeline, const struct mp_process_pipeline_state *state
         exposure = state->exposure;
 
         if (output_changed) {
-                camera_rotation = mod(camera->rotate - device_rotation, 360);
+                camera_rotation = mod(pdevice->rotate - device_rotation, 360);
 
                 on_output_changed(format_changed);
         }
 
         struct mp_main_state main_state = {
-                .camera = camera,
+                .device = pdevice,
                 .mode = mode,
                 .image_width = output_buffer_width,
                 .image_height = output_buffer_height,

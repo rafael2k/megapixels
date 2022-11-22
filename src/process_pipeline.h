@@ -7,7 +7,7 @@
 typedef struct _GdkSurface GdkSurface;
 
 struct mp_process_pipeline_state {
-        const struct mp_camera_config *camera;
+        MPDevice *device;
         MPMode mode;
 
         int burst_length;
