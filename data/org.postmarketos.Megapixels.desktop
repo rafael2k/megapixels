@@ -1,10 +1,8 @@
 [Desktop Entry]
 Name=Megapixels
-Exec=megapixels
+Exec=megapixels /etc/megapixels.ini
 Terminal=false
 Type=Application
-Categories=GTK;Photography;Graphics;
+Categories=GTK;Graphics;Photography
+Keywords=camera
 Icon=org.postmarketos.Megapixels
-X-Purism-FormFactor=Workstation;Mobile;
-X-Phosh-UsesFeedback=true
-StartupNotify=true

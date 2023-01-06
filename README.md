@@ -1,7 +1,6 @@
 # Megapixels
 
-A GTK4 camera application that knows how to deal with the media request api. It uses
-opengl to debayer the raw sensor data for the preview.
+A GTK3 camera application that knows how to deal with the media request api
 
 chat: #megapixels:postmarketos.org on matrix
 
@@ -60,7 +59,7 @@ when previewing.
 
 * `width=640` and `height=480` the resolution to use for the sensor
 * `rate=15` the refresh rate in fps to use for the sensor
-* `fmt=BGGR8` sets the pixel and bus formats used when capturing from the sensor.
+* `fmt=BGGR8` sets the pixel and bus formats used when capturing from the sensor, only BGGR8 is fully supported
 
 # Post processing
 
@@ -85,7 +84,20 @@ see postprocess.sh in this repository.
 
 # Developing
 
-Megapixels is developed at: https://gitlab.com/postmarketOS/megapixels
+See the mailing list and issue tracker on https://sr.ht/~martijnbraam/Megapixels/
+
+To send patches, follow this procedure:
+
+1. Change the default subject prefix from "PATCH" to "PATCH Megapixels" by
+   running this command (only needed once).
+   ```shell-session
+   $ git config --local format.subjectPrefix "PATCH Megapixels"
+   ```
+2. Rebase your commits on top of the latest `master`.
+3. Send them to the mailing list:
+   ```shell-session
+   $ git send-email --to="~martijnbraam/public-inbox@lists.sr.ht" origin/master
+   ```
 
 ## Source code organization
 
@@ -196,7 +208,7 @@ By the way, regarding steps 1 and 2, you can manually inspect the list of
 the `media-ctl` tool. This is what the current kernel and hardware revision
 return:
 ```shell-session
-$ media-ctl -d /dev/media1 -p
+$ media-tcl -d /dev/media1 -p
 
 Media controller API version 5.7.19
  
@@ -344,7 +356,7 @@ This `get_frame()` function is where the magic happens: it will call
 then call `process_image()` to process it.
 
 > NOTE: As explained at the end of the [Linux video subsystem
-> section](#linux-video-subsystem), it is a bit more complex than that (that's
+> section](linux-video-subsystem), it is a bit more complex than that (that's
 > why you will find a `ioctl()` instead of a `read()` inside `read_frame()`),
 > but for all purposes, you can ignore this fact.
 

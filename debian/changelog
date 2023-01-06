@@ -1,66 +1,8 @@
-megapixels (1.6.0-1) unstable; urgency=medium
+megapixels (0.16.1-1) unstable; urgency=medium
 
-  * d/gbp.conf: fix upstream tag creation
-  * New upstream version 1.6.0
-  * d/patches: update for new upstream release
-  * d/control: build-depend on libfeedback
+  * Latest gtk3
 
- -- Arnaud Ferraris <aferraris@debian.org>  Wed, 07 Dec 2022 10:57:56 +0100
-
-megapixels (1.5.2-1) unstable; urgency=medium
-
-  [ Guido Günther ]
-  * d/control: megapixels uses GTK4.
-    The description still said it's GTK3 while the build-dep
-    was changed in bee4e0fd.
-    (Closes: #1008065)
-
-  [ Arnaud Ferraris ]
-  * New upstream version 1.5.2
-  * d/patches: update for new upstream release
-  * d/control: update my email address.
-    Also bump Standards-Version, no change required.
-
- -- Arnaud Ferraris <aferraris@debian.org>  Mon, 11 Jul 2022 14:42:02 +0200
-
-megapixels (1.4.3-1) unstable; urgency=medium
-
-  [ Arnaud Ferraris ]
-  * New upstream version 1.4.3
-  * d/patches: refresh patches for new upstream release
-  * debian: reflect upstream changes
-    `megapixels` now has a new maintainer, and migrated to a new upstream
-    repository. Make sure our packaging files reflect those changes.
-  * d/control: update Recommends
-    `graphics-imagemagick-compat` lacks some `imagemagick` features. While
-    it still works fine, `imagemagick` allows for better post-processing, so
-    make this one the preferred package.
-
- -- Federico Ceratto <federico@debian.org>  Mon, 21 Feb 2022 23:43:48 +0000
-
-megapixels (1.3.0-1) unstable; urgency=medium
-
-  [ Arnaud Ferraris ]
-  * New upstream version 1.3.0
-  * d/control: build-depend on gtk4 and bump Standards-Version
-  * d/patches: refresh for 1.3.0
-  * d/copyright: acknowledge changed path and add missing entry
-
- -- Federico Ceratto <federico@debian.org>  Thu, 16 Sep 2021 13:32:22 +0100
-
-megapixels (0.16.0-1) experimental; urgency=medium
-
-  * New upstream release 0.16.0
-
- -- Federico Ceratto <federico@debian.org>  Wed, 28 Apr 2021 19:24:15 +0100
-
-megapixels (0.15.0-1) experimental; urgency=medium
-
-  * New upstream release 0.15.0
-  * d/control: Add libzbar-dev dependency
-  * d/patches: Remove upstreamed patch
-
- -- Evangelos Ribeiro Tzaras <devrtz-debian@fortysixandtwo.eu>  Wed, 03 Mar 2021 00:51:32 +0100
+ -- Rafael Diniz <rafael@riseup.net>  Fri, 06 Jan 2023 16:37:44 +0300
 
 megapixels (0.13.1-2) unstable; urgency=medium
 
