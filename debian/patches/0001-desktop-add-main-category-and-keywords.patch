@@ -1,0 +1,20 @@
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 16 Sep 2020 15:36:36 +0200
+Subject: [PATCH] desktop: add keywords
+
+---
+ data/org.postmarketos.Megapixels.desktop | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/data/org.postmarketos.Megapixels.desktop b/data/org.postmarketos.Megapixels.desktop
+index e84effe..af4b500 100644
+--- a/data/org.postmarketos.Megapixels.desktop
++++ b/data/org.postmarketos.Megapixels.desktop
+@@ -4,6 +4,7 @@ Exec=megapixels
+ Terminal=false
+ Type=Application
+ Categories=GTK;Photography;Graphics;
++Keywords=camera
+ Icon=org.postmarketos.Megapixels
+ X-Purism-FormFactor=Workstation;Mobile;
+ X-Phosh-UsesFeedback=true
